@@ -86,3 +86,11 @@ Chrome 输出                 ~10-20ms（outputLatency + baseLatency）
 - werift `track.onReceiveRtp` 是 Event 对象，必须 `.subscribe(fn)`，直接赋值会导致 0 包（静默失败）。
 - WHIP 发布端 MediaMTX 连接是「HTTP 建连后媒体走 UDP」：`ss` 看不到 8889 的 TCP 长连接是正常的，看 UDP :8189。
 - nginx 加 `location` 必须放在 server 块内，且 WHEP 响应要 `proxy_buffering off` 以免 answer 被缓冲延迟。
+
+## E6 网页 401 根因 + 认证免打扰（2026-08-08）
+
+- 现象：硬刷新后 `GET /` 直接 401，Chrome 不弹密码框，反复刷新被 KasmVNC 拉黑。
+- 根因：KasmVNC 网页层（websockify 8443）强制 Basic Auth（`user:password`，密码文件 `~/.kasmpasswd` 为 sha256-crypt）。Chrome 的 HTTP Basic 凭证**只在内存**，浏览器重启/清除后即丢失；且凭证被拒一次后 Chrome 不再自动重发/弹窗 → 401 → KasmVNC `BlacklistThreshold 5 / BlacklistTimeout 10` 把 IP 拉黑 10s。
+- 修复：nginx 在 `location /`（反代 8443）注入 `proxy_set_header Authorization "Basic $(base64 user:password)"`，浏览器永远收不到 401，无需任何凭证操作；`websockify` 升级请求同样被注入，实测无凭证 `GET /websockify` → 101。
+- 安全说明：8444 对 LAN 开放等于免密进入桌面；如需收紧，删掉该行并 reload nginx 即可恢复 Basic Auth。
+- 另修：WHEP trickle 404 —— MediaMTX v1.20 的候选提交端点要求 `PATCH` + `Content-Type: application/trickle-ice-sdpfrag`（RFC 8840，body 含 `m=` 行 + `a=mid` + `a=ice-ufrag/pwd` + `a=candidate`），旧的 `POST + application/json` 返回 404；已按新格式重写 `player.js` 的 `onicecandidate`，实测 PATCH → 200。

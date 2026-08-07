@@ -217,7 +217,18 @@
         var gotTrack = false, settled = false;
         pc.onicecandidate = function (ev) {
           if (ev.candidate && whepLoc) {
-            fetch(whepLoc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev.candidate.toJSON()) }).catch(function () {});
+            var ufrag = '', pwd = '';
+            var m = /a=ice-ufrag:(\S+)/.exec(pc.localDescription.sdp);
+            if (m) ufrag = m[1];
+            m = /a=ice-pwd:(\S+)/.exec(pc.localDescription.sdp);
+            if (m) pwd = m[1];
+            var mid = ev.candidate.sdpMid || '0';
+            var frag = 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n' +
+              'a=mid:' + mid + '\r\n' +
+              'a=ice-ufrag:' + ufrag + '\r\n' +
+              'a=ice-pwd:' + pwd + '\r\n' +
+              'a=' + ev.candidate.candidate + '\r\n';
+            fetch(whepLoc, { method: 'PATCH', headers: { 'Content-Type': 'application/trickle-ice-sdpfrag' }, body: frag }).catch(function () {});
           }
         };
         function done(ok, err) {
