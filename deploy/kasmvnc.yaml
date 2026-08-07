@@ -1,0 +1,10 @@
+desktop:
+  resolution:
+    width: 1280
+    height: 720
+  pixel_depth: 24
+network:
+  websocket_port: 8443
+  ssl:
+    pem_certificate: /home/yfy/.vnc/kasmvnc.pem
+    pem_key: /home/yfy/.vnc/kasmvnc.key

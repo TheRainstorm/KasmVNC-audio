@@ -1,0 +1,11 @@
+[Unit]
+Description=KasmVNC audio PCM relay (TCP 8450 -> WS 8451)
+After=default.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/yfy/.vnc/audio-relay.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

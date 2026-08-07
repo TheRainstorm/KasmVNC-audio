@@ -1,0 +1,13 @@
+#!/bin/sh
+# 清除环境变量防止与现有会话冲突
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+# 启动音频: PulseAudio 虚拟声卡 + PCM 中继 + FFmpeg 推流
+pulseaudio --start --exit-idle-time=-1 2>/dev/null
+pactl list short sinks 2>/dev/null | grep -q vsink || pactl load-module module-null-sink sink_name=vsink sink_properties=device.description=Virtual_Sink >/dev/null 2>&1
+pactl set-default-sink vsink 2>/dev/null
+nohup /home/yfy/.vnc/audio-stream.sh >/home/yfy/.vnc/audio-stream.log 2>&1 &
+
+# 启动 xfce4 桌面
+exec startxfce4
