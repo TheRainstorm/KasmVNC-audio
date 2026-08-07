@@ -1,0 +1,13 @@
+[Unit]
+Description=KasmVNC audio WHIP publisher (PulseAudio vsink.monitor -> Opus -> MediaMTX)
+After=kasm-audio-webrtc.service
+Wants=kasm-audio-webrtc.service
+
+[Service]
+Type=simple
+ExecStart=/home/yfy/repo/KasmVNC-audio/bin/ffmpeg-whip -hide_banner -loglevel warning -fflags nobuffer -f pulse -fragment_size 512 -i vsink.monitor -c:a libopus -b:a 96k -ar 48000 -ac 2 -frame_duration 10 -f whip http://127.0.0.1:8889/stream/whip
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,40 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>worklet passthrough</title></head>
+<body><div id="status">loading</div>
+<script>
+window.addEventListener('load', function () {
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  var ctx = new Ctx();
+  var src = "class P extends AudioWorkletProcessor{constructor(){super();this.calls=0;this.port.onmessage=(e)=>{this.port.postMessage({got:true})}}process(i,o){this.calls++;if(this.calls%200===0){this.port.postMessage({calls:this.calls})}var inp=i[0],out=o[0];if(inp&&inp[0]){for(var ch=0;ch<out.length;ch++){var s=inp[ch]||inp[0];out[ch].set(s)}}else{for(var c2=0;c2<out.length;c2++){out[c2].fill(0)}}return true}}registerProcessor('kasm-pcm',P);";
+  var an = ctx.createAnalyser();
+  an.fftSize = 2048;
+  an.connect(ctx.destination);
+  var msgs = [];
+  function report(tag) {
+    var buf = new Uint8Array(an.frequencyBinCount);
+    an.getByteTimeDomainData(buf);
+    var sum = 0;
+    for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; sum += v * v; }
+    var rms = Math.sqrt(sum / buf.length);
+    var db = rms > 0.0001 ? Math.round(20 * Math.log10(rms)) : -999;
+    document.getElementById('status').textContent = tag + ' db=' + db + ' ctx=' + ctx.state + ' | msgs=' + msgs.join(';');
+  }
+  ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })))
+    .then(function () {
+      var wn = new AudioWorkletNode(ctx, 'kasm-pcm', { outputChannelCount: [2], numberOfOutputs: 1, numberOfInputs: 1 });
+      wn.port.onmessage = function (e) { msgs.push(JSON.stringify(e.data)); };
+      var osc = ctx.createOscillator();
+      osc.frequency.value = 440;
+      var g = ctx.createGain();
+      g.gain.value = 0.5;
+      osc.connect(g);
+      g.connect(wn);
+      wn.connect(an);
+      osc.start();
+      setTimeout(function () { report('osc->worklet'); }, 2500);
+    })
+    .catch(function (e) {
+      document.getElementById('status').textContent = 'addModule FAIL: ' + e;
+    });
+});
+</script>
+</body></html>

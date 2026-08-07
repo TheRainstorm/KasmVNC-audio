@@ -1,0 +1,11 @@
+[Unit]
+Description=MediaMTX WebRTC media server (KasmVNC audio WHIP/WHEP)
+After=network.target
+
+[Service]
+ExecStart=/home/yfy/repo/KasmVNC-audio/bin/mediamtx /home/yfy/repo/KasmVNC-audio/bin/mediamtx.yml
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

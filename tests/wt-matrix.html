@@ -1,0 +1,58 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>worklet matrix</title></head>
+<body><div id="status">loading</div>
+<script>
+window.addEventListener('load', function () {
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  var ctx = new Ctx();
+  var SRC_PASS = "class P extends AudioWorkletProcessor{constructor(){super();this.calls=0}process(i,o){this.calls++;var inp=i[0],out=o[0];if(inp&&inp[0]){for(var ch=0;ch<out.length;ch++){var s=inp[ch]||inp[0];out[ch].set(s)}}else{for(var c=0;c<out.length;c++){out[c].fill(0)}}return true}}registerProcessor('p-pass',P);";
+  var SRC_PORT = "class P extends AudioWorkletProcessor{constructor(){super();this.calls=0;this.buf=new Float32Array(0);this.port.onmessage=(e)=>{var d=e.data;var nb=new Float32Array(this.buf.length+d.length);nb.set(this.buf);nb.set(d,this.buf.length);this.buf=nb}}process(i,o){this.calls++;var c0=o[0],c1=o[1],n=c0.length;if(this.buf.length>=n*2){var pi=0;for(var j=0;j<n;j++){c0[j]=this.buf[pi];c1[j]=this.buf[pi+1];pi+=2}this.buf=this.buf.subarray(n*2)}else{c0.fill(0);c1.fill(0)}return true}}registerProcessor('p-port',P);";
+  var out = [];
+  function mkAnalyser() {
+    var an = ctx.createAnalyser();
+    an.fftSize = 2048;
+    an.connect(ctx.destination);
+    return an;
+  }
+  function dbOf(an) {
+    var buf = new Uint8Array(an.frequencyBinCount);
+    an.getByteTimeDomainData(buf);
+    var sum = 0;
+    for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; sum += v * v; }
+    var rms = Math.sqrt(sum / buf.length);
+    return rms > 0.0001 ? Math.round(20 * Math.log10(rms)) : -999;
+  }
+  function oscInto(node) {
+    var osc = ctx.createOscillator();
+    osc.frequency.value = 440;
+    var g = ctx.createGain();
+    g.gain.value = 0.5;
+    osc.connect(g); g.connect(node); osc.start();
+  }
+  function pumpInto(node, withTransfer) {
+    var phase = 0;
+    setInterval(function () {
+      var f = new Float32Array(8192);
+      for (var i = 0; i < f.length; i++) { phase += 0.1; f[i] = Math.sin(phase) * 0.5; }
+      if (withTransfer) node.port.postMessage(f, [f.buffer]);
+      else node.port.postMessage(f);
+    }, 40);
+  }
+  Promise.all([
+    ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([SRC_PASS], { type: 'application/javascript' }))),
+    ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([SRC_PORT], { type: 'application/javascript' })))
+  ]).then(function () {
+    var n1 = new AudioWorkletNode(ctx, 'p-pass', { outputChannelCount: [2], numberOfOutputs: 1 });
+    var a1 = mkAnalyser(); oscInto(n1); n1.connect(a1); out.push(['pass+osc', n1, a1]);
+    var n2 = new AudioWorkletNode(ctx, 'p-port', { outputChannelCount: [2], numberOfOutputs: 1 });
+    var a2 = mkAnalyser(); oscInto(n2); pumpInto(n2, true); n2.connect(a2); out.push(['port+osc+transfer', n2, a2]);
+    var n3 = new AudioWorkletNode(ctx, 'p-port', { outputChannelCount: [2], numberOfOutputs: 1 });
+    var a3 = mkAnalyser(); oscInto(n3); pumpInto(n3, false); n3.connect(a3); out.push(['port+osc+notransfer', n3, a3]);
+    var n4 = new AudioWorkletNode(ctx, 'p-port', { outputChannelCount: [2], numberOfOutputs: 1 });
+    var a4 = mkAnalyser(); pumpInto(n4, true); n4.connect(a4); out.push(['port+noinput+transfer', n4, a4]);
+    setTimeout(function () {
+      document.getElementById('status').textContent = out.map(function (o) { return o[0] + '=' + dbOf(o[2]); }).join(' | ');
+    }, 2500);
+  }).catch(function (e) { document.getElementById('status').textContent = 'FAIL: ' + e; });
+});
+</script>
+</body></html>

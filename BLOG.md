@@ -125,10 +125,11 @@ vsink → ffmpeg → relay → WS → 测试浏览器 → PulseAudio → vsink �
 - `deploy/player.js`：浏览器播放器（含诊断）；
 - `deploy/audio-relay.py`：TCP→WS 中继（systemd 用户服务）；
 - `deploy/audio-stream.sh`：ffmpeg 双路推流；
-- `deploy/kasmvnc-audio.conf`：nginx 8444 统一入口；
-- `deploy/inject.py`：把播放器注入 KasmVNC 页面。
+- `deploy/kasmvnc-audio.conf`：nginx 8444 统一入口（含 `/stream/` → MediaMTX）；
+- `deploy/inject.py`：把播放器注入 KasmVNC 页面；
+- `deploy/mediamtx.yml` + `deploy/kasm-audio-webrtc.service` + `deploy/kasm-audio-whep.service`：WebRTC 服务。
 
-浏览器访问 `https://<host>:8444`，右下角有 🔊 按钮与状态标签 `播放中 | script | ctx=running | x.xMB | -xxdB`。
+浏览器访问 `https://<host>:8444`，右下角 🔊 按钮**默认收起**：悬停展开状态（模式/延迟/电平），5 秒无交互自动隐藏（播放中只留一个绿点）。
 
 ## 现状与展望
 
@@ -136,3 +137,39 @@ vsink → ffmpeg → relay → WS → 测试浏览器 → PulseAudio → vsink �
 - 下一步：真实 X 会话中验证 AudioWorklet 128-quantum 的可行性（目标浏览器缓冲 2.7ms）；自适应缓冲水位；评估 `<20ms` 的物理下限。
 
 完整实验数据见 [EXPERIMENTS.md](EXPERIMENTS.md)。
+
+
+## 升级：WebRTC / WHIP-WHEP（把延迟从 160ms 压向 60ms）
+
+WS PCM 管线再怎么调，浏览器端 ScriptProcessor(21ms) + Chrome 输出缓冲(40ms) 就有物理下限 ~65-90ms，体感还会被主线程饥饿放大到 0.5s。于是把传输层换成 WebRTC：
+
+```
+桌面应用 → PulseAudio vsink
+                │
+                ▼ vsink.monitor
+        ffmpeg-whip（Opus 10ms 帧，libopus 96k/48k）
+                │  WHIP (HTTP POST offer + UDP SRTP)
+                ▼
+        MediaMTX v1.20（仅 WebRTC，:8889/:8189）
+                │  WHEP (HTTP POST answer + trickle)
+                ▼
+        浏览器 RTCPeerConnection → AudioContext → 扬声器
+```
+
+### 关键决策
+
+1. **Opus 10ms 帧**：`-frame_duration 10`，RTP 实测 100 包/s、时钟同步误差 4ms、环回抖动 0——局域网下几乎零抖动，jitter buffer 可以压得很小。
+2. **音频-only 发布**：MediaMTX v1.20 接受纯音频 WHIP（FFmpeg 8.0 的「必须音视频并存」问题只在那个版本出现，我们用 ffmpeg master）。
+3. **发布端常驻**：`kasm-audio-whep.service`（systemd user，Restart=on-failure）；MediaMTX 也是 systemd user 服务。重启自愈，不依赖交互式 shell。
+4. **播放器降级链**：WHEP → WS PCM → Icecast MP3。WHEP 5 秒无轨道或 ICE 失败自动切 WS，WS 断再切 MP3，任何一环挂了都有声。
+5. **延迟可视化**：状态栏实时显示 `WHEP | 播放中 | 延迟≈Nms`（WHEP 用 `inbound-rtp.playoutDelay + outputLatency + baseLatency`，WS 用待播缓冲 + SP quantum）。
+
+### 实验数据（E5）
+
+- RTP：697 包/8s = 100 包/s（10ms），RTP 时钟 6960ms vs 墙钟 6964ms。
+- 延迟预算：采集 ~3-15ms + Opus 10ms + 转发 <5ms + 网络 <1ms + 浏览器 playout/output ~30-60ms ≈ **预期 60-110ms**，比 WS 路径的 162ms 至少省 50ms；配合远程 Chrome `--audio-buffer-size=128` 还能再省 ~20ms。
+
+### 待办
+
+- 用户硬刷新后实测 WHEP 路径的体感与状态栏延迟数字；
+- 若仍 >60ms，重启远程桌面 Chrome 注入低延迟输出参数（会断开当前桌面页面，需择机）。

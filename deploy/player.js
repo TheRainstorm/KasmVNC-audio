@@ -2,70 +2,123 @@
   if (window.__kasmAudioStarted) return;
   window.__kasmAudioStarted = true;
 
-  var ctx = null, node = null, analyser = null, ws = null;
-  var running = false, bytes = 0, lastMsgAt = 0, mode = 'none';
-  var pending = new Float32Array(0);
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+
+  var ctx = null;
+  try { ctx = new Ctx({ sampleRate: 48000, latencyHint: 'interactive' }); }
+  catch (e) {
+    try { ctx = new Ctx({ latencyHint: 'interactive' }); }
+    catch (e2) { ctx = new Ctx(); }
+  }
+
+  // ---- state ----
+  var pc = null, ws = null, sp = null, analyser = null, mediaSrc = null;
+  var mode = 'none';          // whep | ws | mp3
+  var starting = false, running = false, userStopped = false;
+  var bytes = 0, lastMsgAt = 0, pending = new Float32Array(0);
+  var latMs = null, startTs = 0, statsTimer = null, whepTimer = null, whepLoc = null;
+
+  // ---- UI ----
+  var widget, statusEl, btn, dotEl;
+  var collapsed = true, hideTimer = null;
 
   function setStatus(t) {
-    var el = document.getElementById('kasmAudioStatus');
-    if (el) el.textContent = t;
+    if (statusEl) statusEl.textContent = t;
   }
 
-  function pushPCM(f) {
-    if (pending.length > 96000) {
-      pending = f;
-      return;
-    }
-    var nb = new Float32Array(pending.length + f.length);
-    nb.set(pending);
-    nb.set(f, pending.length);
-    pending = nb;
+  function uiText() {
+    var parts = [mode === 'none' ? '就绪' : (mode === 'whep' ? 'WHEP' : mode === 'ws' ? 'WS' : 'MP3')];
+    parts.push(running ? '播放中' : '未播放');
+    if (ctx) parts.push('ctx=' + ctx.state);
+    if (bytes > 0) parts.push((bytes / 1048576).toFixed(1) + 'MB');
+    if (latMs !== null) parts.push('延迟≈' + latMs + 'ms');
+    if (lastMsgAt && (Date.now() - lastMsgAt > 3000)) parts.push('⚠️数据停');
+    var db = levelDb();
+    if (db !== null) parts.push(db + 'dB');
+    return parts.join(' | ');
   }
 
-  function useFallback() {
-    if (mode === 'mp3') return;
-    mode = 'mp3';
+  function expand() {
+    collapsed = false;
+    statusEl.style.display = 'block';
+    btn.style.width = 'auto';
+    btn.style.height = '32px';
+    btn.style.borderRadius = '16px';
+    btn.style.padding = '0 14px';
+    btn.style.fontSize = '13px';
+    btn.textContent = running ? ('🔊 ' + (latMs !== null ? latMs + 'ms' : '播放中')) : '🔊 开启声音';
+    if (dotEl) dotEl.style.display = 'none';
+  }
+
+  function collapse() {
+    collapsed = true;
+    statusEl.style.display = 'none';
+    btn.style.width = '44px';
+    btn.style.height = '44px';
+    btn.style.borderRadius = '22px';
+    btn.style.padding = '0';
+    btn.style.fontSize = '20px';
+    btn.textContent = '🔊';
+  }
+
+  function reveal() {
+    widget.style.opacity = '1';
+    widget.style.pointerEvents = 'auto';
+    if (dotEl) dotEl.style.display = 'none';
+    armAutoHide();
+  }
+
+  function armAutoHide() {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () {
+      widget.style.opacity = '0';
+      widget.style.pointerEvents = 'none';
+      if (running && mode !== 'none' && dotEl) dotEl.style.display = 'block';
+    }, 5000);
+  }
+
+  function buildUI() {
+    widget = document.createElement('div');
+    widget.id = 'kasmAudioWidget';
+    widget.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font:12px/1.3 sans-serif;opacity:1;transition:opacity .35s;';
+
+    statusEl = document.createElement('div');
+    statusEl.id = 'kasmAudioStatus';
+    statusEl.style.cssText = 'padding:4px 10px;border-radius:4px;background:rgba(0,0,0,.65);color:#9fe6a0;white-space:nowrap;pointer-events:none;display:none;';
+
+    btn = document.createElement('button');
+    btn.id = 'kasmAudioBtn';
+    btn.type = 'button';
+    btn.title = '远程音频（WHEP/WebRTC 优先）';
+    btn.style.cssText = 'width:44px;height:44px;border-radius:22px;border:none;background:rgba(26,155,215,.92);color:#fff;font-size:20px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;transition:all .2s;';
+
+    dotEl = document.createElement('div');
+    dotEl.id = 'kasmAudioDot';
+    dotEl.style.cssText = 'position:fixed;right:14px;bottom:14px;width:10px;height:10px;border-radius:50%;background:#3ddc74;box-shadow:0 0 6px rgba(61,220,116,.9);z-index:2147483647;pointer-events:none;display:none;';
+
+    widget.appendChild(statusEl);
+    widget.appendChild(btn);
+    document.body.appendChild(widget);
+    document.body.appendChild(dotEl);
+
+    widget.addEventListener('mouseenter', function () { clearTimeout(hideTimer); expand(); });
+    widget.addEventListener('mouseleave', function () { collapse(); armAutoHide(); });
+    btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); toggle(); });
+
+    ['mousemove', 'touchstart', 'pointerdown', 'keydown'].forEach(function (ev) {
+      window.addEventListener(ev, function () {
+        if (widget.style.opacity !== '1') reveal();
+        else armAutoHide();
+      }, { passive: true });
+    });
+    collapse();
+    armAutoHide();
+  }
+
+  function levelDb() {
     try {
-      var a = new Audio('/audio/live.mp3');
-      a.play().then(function () {
-        setStatus('兜底 MP3 播放中 | 延迟约10s');
-      }, function () {
-        setStatus('兜底被拦截，请点按钮');
-      });
-    } catch (e) {
-      setStatus('音频初始化失败');
-    }
-  }
-
-  function start() {
-    if (!ctx) return;
-    if (ctx.state !== 'running') {
-      ctx.resume().then(function () {
-        if (ctx.state === 'running') running = true;
-      }).catch(function () {
-        setStatus('ctx 启动失败，切兜底');
-        useFallback();
-      });
-    } else {
-      running = true;
-    }
-    setTimeout(function () {
-      if (ctx && ctx.state !== 'running' && mode !== 'mp3') {
-        setStatus('ctx 未运行，切兜底');
-        useFallback();
-      }
-    }, 700);
-  }
-
-  function wire(n) {
-    node = n;
-    analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048;
-    node.connect(analyser);
-    analyser.connect(ctx.destination);
-    if (ctx.state === 'running') running = true;
-    setInterval(function () {
-      if (!analyser) return;
+      if (!analyser) return null;
       var buf = new Uint8Array(analyser.frequencyBinCount);
       analyser.getByteTimeDomainData(buf);
       var sum = 0;
@@ -74,56 +127,213 @@
         sum += v * v;
       }
       var rms = Math.sqrt(sum / buf.length);
-      var db = rms > 0.0001 ? Math.round(20 * Math.log10(rms)) : -999;
-      var stalled = lastMsgAt && (Date.now() - lastMsgAt > 3000);
-      setStatus((running ? '播放中' : '就绪，点击开启') + ' | ' + mode + ' | ctx=' + ctx.state + ' | ' + (bytes / 1048576).toFixed(1) + 'MB' + (stalled ? ' | ⚠️数据停' : '') + ' | ' + db + 'dB');
-    }, 1000);
-    setStatus('就绪，点击任意处开启');
+      return rms > 0.0001 ? Math.round(20 * Math.log10(rms)) : -999;
+    } catch (e) { return null; }
   }
 
-  function setupScript() {
-    if (mode !== 'none') return;
-    mode = 'script';
-    try {
-      var sp = ctx.createScriptProcessor(1024, 0, 2);
-      sp.onaudioprocess = function (e) {
-        var c0 = e.outputBuffer.getChannelData(0);
-        var c1 = e.outputBuffer.getChannelData(1);
-        var n = c0.length;
-        if (pending.length >= n * 2) {
-          var pi = 0;
-          for (var j = 0; j < n; j++) {
-            c0[j] = pending[pi];
-            c1[j] = pending[pi + 1];
-            pi += 2;
-          }
-          pending = pending.subarray(n * 2);
-        } else {
-          c0.fill(0);
-          c1.fill(0);
+  // ---- WS PCM fallback ----
+  function pushPCM(f) {
+    if (pending.length > 96000) { pending = f; return; }
+    var nb = new Float32Array(pending.length + f.length);
+    nb.set(pending);
+    nb.set(f, pending.length);
+    pending = nb;
+  }
+
+  function wireWs() {
+    sp = ctx.createScriptProcessor(1024, 0, 2);
+    sp.onaudioprocess = function (e) {
+      var c0 = e.outputBuffer.getChannelData(0);
+      var c1 = e.outputBuffer.getChannelData(1);
+      var n = c0.length;
+      if (pending.length >= n * 2) {
+        var pi = 0;
+        for (var j = 0; j < n; j++) {
+          c0[j] = pending[pi];
+          c1[j] = pending[pi + 1];
+          pi += 2;
         }
-      };
-      wire(sp);
-    } catch (err) {
-      console.error('kasm ScriptProcessor failed:', err);
-      mode = 'none';
-      useFallback();
+        pending = pending.subarray(n * 2);
+      } else {
+        c0.fill(0); c1.fill(0);
+      }
+    };
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    sp.connect(analyser);
+    analyser.connect(ctx.destination);
+  }
+
+  function startWs() {
+    if (mode !== 'none' && mode !== 'whep') return;
+    mode = 'ws';
+    wireWs();
+    var wsUrl = window.KASM_AUDIO_WS || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws-audio');
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = function (e) {
+      bytes += e.data.byteLength;
+      lastMsgAt = Date.now();
+      pushPCM(new Float32Array(e.data));
+    };
+    ws.onerror = function () { setStatus('WS 错误，切兜底 MP3'); useFallback(); };
+    ws.onclose = function () { if (!running) setStatus('WS 已断开'); };
+    running = true;
+  }
+
+  // ---- MP3 last resort ----
+  function useFallback() {
+    if (mode === 'mp3') return;
+    mode = 'mp3';
+    try {
+      var a = new Audio('/audio/live.mp3');
+      a.play().then(function () {
+        running = true;
+        latMs = null;
+        setStatus('兜底 MP3 播放中');
+      }, function () { setStatus('兜底被拦截，请点按钮'); });
+    } catch (e) { setStatus('音频初始化失败'); }
+  }
+
+  // ---- WHEP / WebRTC primary ----
+  function whepStats() {
+    if (!pc) return;
+    pc.getStats().then(function (stats) {
+      stats.forEach(function (r) {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+          var out = (typeof ctx.outputLatency === 'number' ? ctx.outputLatency * 1000 : 0);
+          var base = (typeof ctx.baseLatency === 'number' ? ctx.baseLatency * 1000 : 0);
+          var pd = (typeof r.playoutDelay === 'number' ? r.playoutDelay * 1000 : (r.jitter || 0) * 1000 * 1.5);
+          latMs = Math.round(pd + out + base);
+        }
+      });
+    }).catch(function () {});
+  }
+
+  function startWhep() {
+    return new Promise(function (resolve, reject) {
+      try {
+        pc = new RTCPeerConnection({ iceServers: [] });
+        var gotTrack = false, settled = false;
+        pc.onicecandidate = function (ev) {
+          if (ev.candidate && whepLoc) {
+            fetch(whepLoc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev.candidate.toJSON()) }).catch(function () {});
+          }
+        };
+        function done(ok, err) {
+          if (settled) return;
+          settled = true;
+          if (whepTimer) clearTimeout(whepTimer);
+          if (ok) { running = true; statsTimer = setInterval(whepStats, 1000); resolve(true); }
+          else { try { pc.close(); } catch (e) {} reject(err || new Error('whep failed')); }
+        }
+        pc.ontrack = function (ev) {
+          gotTrack = true;
+          var stream = ev.streams && ev.streams[0] ? ev.streams[0] : new MediaStream([ev.track]);
+          mediaSrc = ctx.createMediaStreamSource(stream);
+          analyser = ctx.createAnalyser();
+          analyser.fftSize = 2048;
+          mediaSrc.connect(analyser);
+          analyser.connect(ctx.destination);
+          done(true);
+        };
+        pc.onconnectionstatechange = function () {
+          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+            if (!gotTrack) done(false, new Error('pc ' + pc.connectionState));
+          }
+        };
+        pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false }).then(function (o) {
+          return pc.setLocalDescription(o);
+        }).then(function () {
+          var posted = false;
+          function post() {
+            if (posted) return;
+            posted = true;
+            fetch('/stream/whep', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/sdp' },
+              body: pc.localDescription.sdp
+            }).then(function (r) {
+              if (!r.ok) throw new Error('WHEP HTTP ' + r.status);
+              whepLoc = r.headers.get('Location');
+              return r.text();
+            }).then(function (answer) {
+              return pc.setRemoteDescription({ type: 'answer', sdp: answer });
+            }).catch(function (err) { done(false, err); });
+          }
+          if (pc.iceGatheringState === 'complete') post();
+          else {
+            var t = setTimeout(post, 900);
+            pc.onicegatheringstatechange = function () {
+              if (pc.iceGatheringState === 'complete') { clearTimeout(t); post(); }
+            };
+          }
+        }).catch(function (err) { done(false, err); });
+        whepTimer = setTimeout(function () { if (!gotTrack) done(false, new Error('WHEP 5s 超时')); }, 5000);
+      } catch (err) { reject(err); }
+    });
+  }
+
+  // ---- start / toggle ----
+  function toggle() {
+    if (running && mode !== 'none') {
+      stop();
+      return;
+    }
+    start();
+  }
+
+  function stop() {
+    userStopped = true;
+    try { if (pc) pc.close(); } catch (e) {}
+    try { if (ws) ws.close(); } catch (e) {}
+    if (statsTimer) clearInterval(statsTimer);
+    if (whepTimer) clearTimeout(whepTimer);
+    try { if (sp) sp.disconnect(); } catch (e) {}
+    try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
+    if (ctx && ctx.state === 'running') ctx.suspend().catch(function () {});
+    pc = null; ws = null; sp = null; mediaSrc = null; analyser = null;
+    pending = new Float32Array(0);
+    running = false; mode = 'none'; latMs = null; bytes = 0;
+    setStatus('已停止，点击开启');
+    collapse();
+  }
+
+  function start() {
+    if (starting || running) return;
+    starting = true;
+    userStopped = false;
+    if (ctx.state !== 'running') {
+      ctx.resume().then(go).catch(function () { starting = false; setStatus('ctx 启动失败，切兜底'); useFallback(); });
+    } else go();
+
+    function go() {
+      startWhep().then(function () {
+        mode = 'whep';
+        setStatus('WHEP 已连接');
+      }).catch(function (err) {
+        console.warn('[kasm-audio] WHEP failed, fallback WS:', err);
+        startWs();
+        setStatus('WHEP 失败，WS 兜底');
+      }).then(function () { starting = false; });
     }
   }
 
+  // ---- debug API ----
   window.__kasmAudioDebug = function () {
     return {
       ctxState: ctx ? ctx.state : null,
-      wsState: ws ? ws.readyState : null,
       mode: mode,
-      nodeMade: !!node,
-      bytes: bytes,
-      pendingSamples: pending.length,
       running: running,
+      pcState: pc ? pc.connectionState : null,
+      wsState: ws ? ws.readyState : null,
+      bytes: bytes,
+      latMs: latMs,
+      pendingSamples: pending.length,
       lastMsgAgo: lastMsgAt ? (Date.now() - lastMsgAt) : null
     };
   };
-
+  window.__kasmAudioLevel = function () { return levelDb(); };
   window.__kasmAudioSpectrum = function () {
     try {
       if (!analyser) return { err: 'no analyser' };
@@ -141,77 +351,28 @@
         logSum += Math.log(v);
         if (freq[j] > 0) nz++;
       }
-      var flatness = Math.exp(logSum / freq.length) / (mean || 1);
-      var binHz = ctx.sampleRate / analyser.fftSize;
       return {
         sampleRate: ctx.sampleRate,
-        dominantHz: Math.round(peakBin * binHz),
+        dominantHz: Math.round(peakBin * (ctx.sampleRate / analyser.fftSize)),
         peakLevel: peak,
-        flatness: Math.round(flatness * 100) / 100,
+        flatness: Math.round(Math.exp(logSum / freq.length) / (mean || 1) * 100) / 100,
         nonzeroBins: nz
       };
-    } catch (e) {
-      return { err: String(e) };
-    }
+    } catch (e) { return { err: String(e) }; }
   };
 
-  window.__kasmAudioLevel = function () {
-    try {
-      if (!analyser) return null;
-      var buf = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteTimeDomainData(buf);
-      var sum = 0;
-      for (var i = 0; i < buf.length; i++) {
-        var v = (buf[i] - 128) / 128;
-        sum += v * v;
-      }
-      var rms = Math.sqrt(sum / buf.length);
-      return rms > 0.0001 ? Math.round(20 * Math.log10(rms)) : -999;
-    } catch (e) {
-      return null;
-    }
-  };
-
+  // ---- init ----
   try {
-    var Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) throw new Error('no AudioContext');
-    try { ctx = new Ctx({ sampleRate: 48000 }); } catch (e) { ctx = new Ctx(); }
-
-    var wsUrl = window.KASM_AUDIO_WS || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws-audio');
-    ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
-    ws.onmessage = function (e) {
-      bytes += e.data.byteLength;
-      lastMsgAt = Date.now();
-      var f = new Float32Array(e.data);
-      if (!node) { pushPCM(f); return; }
-      pushPCM(f);
-    };
-    ws.onerror = function () { setStatus('WS 错误，切兜底'); useFallback(); };
-    ws.onclose = function () { if (!running) setStatus('WS 已断开'); };
-
-    setupScript();
-
+    buildUI();
+    setStatus('音频初始化中…');
     ['pointerdown', 'keydown', 'touchstart', 'click'].forEach(function (ev) {
-      window.addEventListener(ev, start, { capture: true, passive: true });
+      window.addEventListener(ev, function () { if (!starting && !running && !userStopped) start(); }, { capture: true, passive: true });
     });
-
-    var b = document.createElement('button');
-    b.type = 'button';
-    b.id = 'kasmAudioBtn';
-    b.textContent = '🔊 开启声音';
-    b.title = '点击开启远程桌面音频';
-    b.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483647;padding:8px 14px;border:none;border-radius:6px;background:#1a9bd7;color:#fff;font:600 13px/1.2 sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.35)';
-    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); start(); });
-    document.body.appendChild(b);
-
-    var s = document.createElement('span');
-    s.id = 'kasmAudioStatus';
-    s.textContent = '音频初始化中…';
-    s.style.cssText = 'position:fixed;right:14px;bottom:52px;z-index:2147483647;padding:4px 10px;border-radius:4px;background:rgba(0,0,0,.55);color:#9fe6a0;font:12px/1.2 sans-serif;pointer-events:none';
-    document.body.appendChild(s);
+    setInterval(function () {
+      if (!statusEl) return;
+      if (!collapsed) setStatus(uiText());
+    }, 500);
   } catch (err) {
-    console.error('kasm audio init failed:', err);
-    useFallback();
+    console.error('[kasm-audio] init failed:', err);
   }
 })();

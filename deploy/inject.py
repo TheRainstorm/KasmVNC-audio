@@ -1,6 +1,7 @@
+import os
 import re
 
-js = open("/tmp/player-v4.js", encoding="utf-8").read()
+js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.js"), encoding="utf-8").read()
 for f in ["/usr/share/kasmvnc/www/index.html", "/usr/share/kasmvnc/www/vnc.html"]:
     h = open(f, encoding="utf-8").read()
     h = re.sub(r'<script id="kasmAudioPlayer">.*?</script>\s*', "", h, flags=re.S)

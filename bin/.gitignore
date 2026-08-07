@@ -1,0 +1,8 @@
+# 大二进制与运行产物不入库（见 README.md）
+/ffmpeg
+/ffmpeg-whip
+/mediamtx
+/mediamtx.log
+*.tar.gz
+*.tar.xz
+*.zip

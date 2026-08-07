@@ -1,0 +1,14 @@
+logLevel: info
+rtsp: false
+rtmp: false
+hls: false
+srt: false
+moq: false
+webrtc: true
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: true
+webrtcICEServers2: []
+paths:
+  all_others:
+    source: publisher

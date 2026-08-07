@@ -14,7 +14,7 @@ while true; do
     fi
     echo "$(date '+%F %T') starting ffmpeg push" >>/home/yfy/.vnc/audio-stream.log
     ffmpeg -hide_banner -loglevel warning -fflags nobuffer \
-        -f pulse -fragment_size 4096 -i vsink.monitor \
+        -f pulse -fragment_size 512 -i vsink.monitor \
         -ac 2 -ar 48000 -f f32le \
         tcp://127.0.0.1:8450 \
         >>/home/yfy/.vnc/audio-stream.log 2>&1 &
