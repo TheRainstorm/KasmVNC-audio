@@ -304,7 +304,13 @@
               whepLoc = r.headers.get('Location');
               return r.text();
             }).then(function (answer) {
-              return pc.setRemoteDescription({ type: 'answer', sdp: answer });
+              // 过滤 IPv6 候选：Windows 到 ares 的 IPv6 路由不可靠，强制走 IPv4 LAN
+              var sdp = answer.split(/\r?\n/).filter(function (line) {
+                if (!/^a=candidate:/.test(line)) return true;
+                var parts = line.split(/\s+/);
+                return !(parts[4] && parts[4].indexOf(':') !== -1);
+              }).join('\r\n');
+              return pc.setRemoteDescription({ type: 'answer', sdp: sdp });
             }).catch(function (err) { done(false, err); });
           }
           if (pc.iceGatheringState === 'complete') post();

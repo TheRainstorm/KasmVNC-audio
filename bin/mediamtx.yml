@@ -8,7 +8,8 @@ webrtc: true
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8188
-webrtcIPsFromInterfaces: true
+webrtcIPsFromInterfaces: false
+webrtcAdditionalHosts: [127.0.0.1]
 webrtcICEServers2: []
 paths:
   all_others:
