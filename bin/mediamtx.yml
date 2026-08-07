@@ -1,4 +1,4 @@
-logLevel: info
+logLevel: debug
 rtsp: false
 rtmp: false
 hls: false
@@ -7,6 +7,7 @@ moq: false
 webrtc: true
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8188
 webrtcIPsFromInterfaces: true
 webrtcICEServers2: []
 paths:

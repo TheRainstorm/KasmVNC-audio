@@ -15,7 +15,7 @@
   // ---- state ----
   var pc = null, ws = null, sp = null, analyser = null, mediaSrc = null;
   var mode = 'none';          // whep | ws | mp3
-  var starting = false, running = false, userStopped = false;
+  var starting = false, running = false, userStopped = false, fallingBack = false, noMediaTicks = 0;
   var bytes = 0, lastMsgAt = 0, pending = new Float32Array(0);
   var latMs = null, startTs = 0, statsTimer = null, whepTimer = null, whepLoc = null;
 
@@ -196,18 +196,50 @@
   }
 
   // ---- WHEP / WebRTC primary ----
-  function whepStats() {
+  function whepStats(cb) {
     if (!pc) return;
     pc.getStats().then(function (stats) {
+      var pkts = 0;
       stats.forEach(function (r) {
         if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+          pkts = r.packetsReceived || 0;
           var out = (typeof ctx.outputLatency === 'number' ? ctx.outputLatency * 1000 : 0);
           var base = (typeof ctx.baseLatency === 'number' ? ctx.baseLatency * 1000 : 0);
           var pd = (typeof r.playoutDelay === 'number' ? r.playoutDelay * 1000 : (r.jitter || 0) * 1000 * 1.5);
-          latMs = Math.round(pd + out + base);
+          if (pkts > 0) latMs = Math.round(pd + out + base);
         }
       });
+      if (cb) cb(pkts);
     }).catch(function () {});
+  }
+
+  function armWatchdog() {
+    if (statsTimer) clearInterval(statsTimer);
+    statsTimer = setInterval(function () {
+      whepStats(function (pkts) {
+        if (pkts > 0) { noMediaTicks = 0; return; }
+        noMediaTicks++;
+        if (noMediaTicks >= 5) failWhep(new Error('5s 内未收到媒体包'));
+      });
+    }, 1000);
+  }
+
+  function teardownWhep() {
+    if (statsTimer) clearInterval(statsTimer);
+    if (whepTimer) clearTimeout(whepTimer);
+    try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
+    try { if (analyser) analyser.disconnect(); } catch (e) {}
+    try { if (pc) pc.close(); } catch (e) {}
+    pc = null; mediaSrc = null; whepLoc = null; statsTimer = null;
+  }
+
+  function failWhep(err) {
+    if (fallingBack || mode === 'ws' || mode === 'mp3') return;
+    fallingBack = true;
+    console.warn('[kasm-audio] WHEP 失败，切 WS 兜底:', err);
+    teardownWhep();
+    startWs();
+    setStatus('WHEP 无媒体，WS 兜底');
   }
 
   function startWhep() {
@@ -235,7 +267,7 @@
           if (settled) return;
           settled = true;
           if (whepTimer) clearTimeout(whepTimer);
-          if (ok) { running = true; statsTimer = setInterval(whepStats, 1000); resolve(true); }
+          if (ok) { running = true; armWatchdog(); resolve(true); }
           else { try { pc.close(); } catch (e) {} reject(err || new Error('whep failed')); }
         }
         pc.ontrack = function (ev) {
@@ -249,8 +281,11 @@
           done(true);
         };
         pc.onconnectionstatechange = function () {
-          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          if (pc.connectionState === 'failed') {
             if (!gotTrack) done(false, new Error('pc ' + pc.connectionState));
+            else failWhep(new Error('pc ' + pc.connectionState));
+          } else if (pc.connectionState === 'disconnected' && !gotTrack) {
+            done(false, new Error('pc ' + pc.connectionState));
           }
         };
         pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false }).then(function (o) {
@@ -306,6 +341,7 @@
     pc = null; ws = null; sp = null; mediaSrc = null; analyser = null;
     pending = new Float32Array(0);
     running = false; mode = 'none'; latMs = null; bytes = 0;
+    fallingBack = false; noMediaTicks = 0;
     setStatus('已停止，点击开启');
     collapse();
   }
@@ -314,6 +350,7 @@
     if (starting || running) return;
     starting = true;
     userStopped = false;
+    fallingBack = false; noMediaTicks = 0;
     if (ctx.state !== 'running') {
       ctx.resume().then(go).catch(function () { starting = false; setStatus('ctx 启动失败，切兜底'); useFallback(); });
     } else go();
@@ -383,6 +420,9 @@
       if (!statusEl) return;
       if (!collapsed) setStatus(uiText());
     }, 500);
+    if (/[?&]kasm_audio_autostart=1/.test(location.search)) {
+      setTimeout(start, 800);
+    }
   } catch (err) {
     console.error('[kasm-audio] init failed:', err);
   }
