@@ -3,6 +3,8 @@ Description=MediaMTX WebRTC media server (KasmVNC audio WHIP/WHEP)
 After=network.target
 
 [Service]
+# 每次启动前按默认路由自动算出主 IPv4，生成运行配置（避免手动填 IP / 泄漏内网 IP）
+ExecStartPre=/home/yfy/.vnc/gen-mediamtx-config.sh
 ExecStart=/home/yfy/repo/KasmVNC-audio/bin/mediamtx /home/yfy/.vnc/mediamtx.yml
 Restart=always
 RestartSec=2

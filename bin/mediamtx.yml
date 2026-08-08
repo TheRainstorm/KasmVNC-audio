@@ -9,9 +9,10 @@ webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8188
 webrtcIPsFromInterfaces: false
-# 运行配置由 deploy/install.sh 生成到 ~/.vnc/mediamtx.yml（不入 git），
-# webrtcAdditionalHosts 会被替换为服务器 LAN IP —— 跨机 WHEP 必须通告可路由地址；
-# 自动探测不灵时用 KASM_AUDIO_LAN_IP 环境变量覆盖后重跑 install.sh。
+# 运行配置由 deploy/gen-mediamtx-config.sh 在 mediamtx 每次启动前生成到
+# ~/.vnc/mediamtx.yml（不入 git）：webrtcAdditionalHosts 自动替换为服务器主 IPv4
+# （默认路由 src IP；可用 KASM_AUDIO_LAN_IP 环境变量覆盖）。
+# 不要手动改成 127.0.0.1 —— 那会让远程浏览器永远连不上 ICE。
 webrtcAdditionalHosts: [127.0.0.1]
 webrtcICEServers2: []
 
