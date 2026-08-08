@@ -1,7 +1,7 @@
 (function () {
   if (window.__kasmAudioStarted) return;
   window.__kasmAudioStarted = true;
-  window.__kasmAudioVer = 'audioel2';
+  window.__kasmAudioVer = 'mode1';
 
   var Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
@@ -21,9 +21,12 @@
   var bytes = 0, lastMsgAt = 0, pending = new Float32Array(0);
   var latMs = null, startTs = 0, statsTimer = null, whepTimer = null, whepLoc = null;
   var lastStats = null, decodeOk = false, decodeOkLogged = false, noDecodeTicks = 0, zeroEnergyTicks = 0;
+  var pref = 'auto', whepRetryTimer = null;   // 通道偏好: auto | whep | ws
+  try { pref = localStorage.getItem('kasmAudioPref') || 'auto'; } catch (e) {}
+  if (['auto', 'whep', 'ws'].indexOf(pref) < 0) pref = 'auto';
 
   // ---- UI ----
-  var widget, statusEl, btn, dotEl;
+  var widget, statusEl, btn, dotEl, modeBtn;
   var collapsed = true, hideTimer = null;
 
   function setStatus(t) {
@@ -33,6 +36,7 @@
   function uiText() {
     var parts = [mode === 'none' ? '就绪' : (mode === 'whep' ? 'WHEP' : mode === 'ws' ? 'WS' : 'MP3')];
     parts.push(running ? '播放中' : '未播放');
+    parts.push('通道:' + prefLabel());
     if (ctx) parts.push('ctx=' + ctx.state);
     if (bytes > 0) parts.push((bytes / 1048576).toFixed(1) + 'MB');
     if (latMs !== null) parts.push('延迟≈' + latMs + 'ms');
@@ -44,6 +48,27 @@
     var db = levelDb();
     if (db !== null) parts.push(db + 'dB');
     return parts.join(' | ');
+  }
+
+  function prefLabel() { return pref === 'auto' ? '自动' : (pref === 'whep' ? '强制WHEP' : '强制WS'); }
+  function refreshModeBtn() {
+    if (!modeBtn) return;
+    modeBtn.textContent = '通道:' + prefLabel();
+    modeBtn.title = '音频通道: ' + prefLabel() + '（点击切换: 自动→强制WHEP→强制WS，选择会记忆）';
+  }
+  function setPref(m) {
+    if (['auto', 'whep', 'ws'].indexOf(m) < 0) return;
+    pref = m;
+    try { localStorage.setItem('kasmAudioPref', m); } catch (e) {}
+    refreshModeBtn();
+  }
+  function cycleMode() {
+    var order = ['auto', 'whep', 'ws'];
+    setPref(order[(order.indexOf(pref) + 1) % order.length]);
+    if (running || mode !== 'none') {   // 运行中切换：重启音频
+      stop();
+      setTimeout(start, 300);
+    }
   }
 
   function expand() {
@@ -99,6 +124,14 @@
     btn.type = 'button';
     btn.title = '远程音频 v8c5c4f4（WHEP/WebRTC 优先）';
     btn.style.cssText = 'width:44px;height:44px;border-radius:22px;border:none;background:rgba(26,155,215,.92);color:#fff;font-size:20px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;transition:all .2s;';
+
+    modeBtn = document.createElement('button');
+    modeBtn.id = 'kasmAudioModeBtn';
+    modeBtn.type = 'button';
+    modeBtn.style.cssText = 'border:none;border-radius:10px;background:rgba(0,0,0,.65);color:#ffd479;font:11px/1 sans-serif;padding:2px 8px;cursor:pointer;';
+    modeBtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); cycleMode(); });
+    refreshModeBtn();
+    widget.appendChild(modeBtn);
 
     dotEl = document.createElement('div');
     dotEl.id = 'kasmAudioDot';
@@ -308,6 +341,7 @@
   function teardownWhep() {
     if (statsTimer) clearInterval(statsTimer);
     if (whepTimer) clearTimeout(whepTimer);
+    if (whepRetryTimer) clearTimeout(whepRetryTimer);
     try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
     try { if (analyser) analyser.disconnect(); } catch (e) {}
     dropMediaElement();
@@ -319,6 +353,21 @@
   function failWhep(err) {
     if (fallingBack || mode === 'ws' || mode === 'mp3') return;
     fallingBack = true;
+    if (pref === 'whep') {
+      console.warn('[kasm-audio] WHEP 异常（强制模式），2s 后重连:', err);
+      teardownWhep();
+      running = false; mode = 'none';
+      setStatus('WHEP 异常，2s 后重连');
+      whepRetryTimer = setTimeout(function () {
+        fallingBack = false;
+        if (userStopped) return;
+        startWhep().then(function () {
+          mode = 'whep';
+          setStatus('WHEP（手动选择）已重连');
+        }).catch(function (e2) { if (!userStopped) failWhep(e2); });
+      }, 2000);
+      return;
+    }
     console.warn('[kasm-audio] WHEP 失败，切 WS 兜底:', err);
     teardownWhep();
     startWs();
@@ -475,6 +524,7 @@
     try { if (ws) ws.close(); } catch (e) {}
     if (statsTimer) clearInterval(statsTimer);
     if (whepTimer) clearTimeout(whepTimer);
+    if (whepRetryTimer) clearTimeout(whepRetryTimer);
     try { if (sp) sp.disconnect(); } catch (e) {}
     try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
     dropMediaElement();
@@ -498,14 +548,29 @@
     } else go();
 
     function go() {
+      if (pref === 'ws') {
+        startWs();
+        starting = false;
+        setStatus('WS（手动选择）');
+        return;
+      }
       startWhep().then(function () {
         mode = 'whep';
-        setStatus('WHEP 已连接');
+        setStatus(pref === 'whep' ? 'WHEP（手动选择）' : 'WHEP 已连接');
+        starting = false;
       }).catch(function (err) {
-        console.warn('[kasm-audio] WHEP failed, fallback WS:', err);
-        startWs();
-        setStatus('WHEP 失败，WS 兜底');
-      }).then(function () { starting = false; });
+        if (pref === 'whep') {
+          console.warn('[kasm-audio] WHEP 失败（强制模式），2s 后重试:', err);
+          starting = false; running = false; mode = 'none';
+          setStatus('WHEP 失败，2s 后重试');
+          whepRetryTimer = setTimeout(function () { if (!userStopped) go(); }, 2000);
+        } else {
+          console.warn('[kasm-audio] WHEP failed, fallback WS:', err);
+          startWs();
+          setStatus('WHEP 失败，WS 兜底');
+          starting = false;
+        }
+      });
     }
   }
 
@@ -527,6 +592,8 @@
     };
   };
   window.__kasmAudioLevel = function () { return levelDb(); };
+  window.__kasmAudioGetMode = function () { return pref; };
+  window.__kasmAudioSetMode = function (m) { setPref(m); if (running || mode !== 'none') { stop(); setTimeout(start, 300); } return pref; };
   window.__kasmAudioSdp = function () {
     if (!pc) return { err: 'no pc' };
     var out = { remote: pc.remoteDescription ? pc.remoteDescription.sdp : null, local: pc.localDescription ? pc.localDescription.sdp : null };

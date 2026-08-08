@@ -18,7 +18,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `deploy/player.js` | 浏览器播放器：WHEP/WebRTC 优先 → WS PCM → MP3 降级链；状态栏实时延迟、电平、模式；按钮默认收起、5s 无交互自动隐藏 |
+| `deploy/player.js` | 浏览器播放器：WHEP/WebRTC 优先 → WS PCM → MP3 降级链；状态栏实时延迟、电平、模式；按钮默认收起、5s 无交互自动隐藏；通道手动选择（自动/WHEP/WS，localStorage 记忆） |
 | `deploy/audio-relay.py` | Python 中继：TCP 8450 → WebSocket 8451，小分块低延迟广播 |
 | `deploy/audio-stream.sh` | ffmpeg 双路推流：PCM→TCP、MP3→Icecast，崩溃自动重启 |
 | `deploy/kasmvnc-audio.conf` | nginx 8444：TLS 入口，反代 KasmVNC 8443 + WS 音频 + Icecast |

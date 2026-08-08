@@ -131,6 +131,8 @@ vsink → ffmpeg → relay → WS → 测试浏览器 → PulseAudio → vsink �
 
 浏览器访问 `https://<host>:8444`，右下角 🔊 按钮**默认收起**：悬停展开状态（模式/延迟/电平），5 秒无交互自动隐藏（播放中只留一个绿点）。
 
+- **通道手动选择**（mode1）：黄色小按钮 `通道:自动/强制WHEP/强制WS`，点击循环切换并记忆到 localStorage（`kasmAudioPref`）。`自动`=优先 WHEP、失败/持续静音自动降级 WS；`强制WHEP`=WHEP 异常不降级，2s 后自动重连；`强制WS`=跳过 WebRTC 直连 WS。运行中切换会自动重启音频流。控制台可用 `__kasmAudioGetMode()` / `__kasmAudioSetMode('whep'|'ws'|'auto')` 脚本化切换。
+
 ## 现状与展望
 
 - 延迟：端到端实测 ~160ms，用户体感约 0.5s（差距可能来自主线程繁忙导致的回调饥饿，见 EXPERIMENTS.md）。
