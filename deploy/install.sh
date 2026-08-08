@@ -50,10 +50,11 @@ command -v systemctl >/dev/null     || err "未找到 systemctl（需要 systemd
 mkdir -p "$VNC_DIR" "$SYSTEMD_DIR"
 gen deploy/audio-relay.py   "$VNC_DIR/audio-relay.py"   "s|/home/yfy|$HOME|g"
 gen deploy/audio-stream.sh  "$VNC_DIR/audio-stream.sh"  "s|/home/yfy|$HOME|g"
-[ "$DRY" = 1 ] || chmod +x "$VNC_DIR/audio-relay.py" "$VNC_DIR/audio-stream.sh"
+gen deploy/whip-watchdog.py "$VNC_DIR/whip-watchdog.py" "s|/home/yfy|$HOME|g"
+[ "$DRY" = 1 ] || chmod +x "$VNC_DIR/audio-relay.py" "$VNC_DIR/audio-stream.sh" "$VNC_DIR/whip-watchdog.py"
 
 # ---- 2. systemd 用户服务（路径替换: /home/yfy/repo/KasmVNC-audio -> $REPO_DIR, /home/yfy -> $HOME）----
-for s in kasm-audio-relay kasm-audio-webrtc kasm-audio-whep; do
+for s in kasm-audio-relay kasm-audio-webrtc kasm-audio-whep kasm-audio-whep-watchdog; do
   gen "deploy/$s.service" "$SYSTEMD_DIR/$s.service" \
       "s|/home/yfy/repo/KasmVNC-audio|$REPO_DIR|g" \
       "s|/home/yfy|$HOME|g"
@@ -67,9 +68,9 @@ fi
 say "reload systemd 并启动服务 ..."
 systemctl --user daemon-reload
 if [ "$START" = 1 ]; then
-  systemctl --user enable --now kasm-audio-webrtc.service kasm-audio-whep.service kasm-audio-relay.service
+  systemctl --user enable --now kasm-audio-webrtc.service kasm-audio-whep.service kasm-audio-relay.service kasm-audio-whep-watchdog.service
 else
-  systemctl --user enable kasm-audio-webrtc.service kasm-audio-whep.service kasm-audio-relay.service
+  systemctl --user enable kasm-audio-webrtc.service kasm-audio-whep.service kasm-audio-relay.service kasm-audio-whep-watchdog.service
   say "--no-start：服务已启用但未启动，可稍后 systemctl --user start kasm-audio-webrtc kasm-audio-whep kasm-audio-relay"
 fi
 

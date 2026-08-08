@@ -23,6 +23,7 @@
 | 8889 | MediaMTX HTTP（WHIP/WHEP 信令） | 回环，经 nginx `/stream/` 反代 |
 | 8188 / 8189 | WHEP 媒体（TCP/UDP，ICE 候选，客户端直连） | 0.0.0.0 |
 | 8450 / 8451 | PCM：ffmpeg→TCP→relay→WebSocket | 回环 |
+| 9997 | MediaMTX 本地 API（whip-watchdog 检查发布状态） | 回环 |
 | 8445 | Icecast MP3 兜底 | 回环 |
 
 ## 快速开始
@@ -58,6 +59,7 @@ sudo python3 deploy/inject.py
 | `deploy/audio-stream.sh` | ffmpeg 双路推流：PCM→TCP、MP3→Icecast，崩溃自动重启 |
 | `deploy/kasmvnc-audio.conf` | nginx 8444：TLS 入口，反代 KasmVNC 8443 + WS 音频 + Icecast + WHIP/WHEP |
 | `deploy/kasm-audio-{relay,webrtc,whep}.service` | systemd 用户服务（relay / MediaMTX / WHIP 发布端） |
+| `deploy/whip-watchdog.py` + `deploy/kasm-audio-whep-watchdog.service` | WHIP 发布看门狗：检测 MediaMTX 上 `stream` 流消失（热重载/发布端挂死）自动重启发布端，~20s 自愈 |
 | `bin/mediamtx.yml` | MediaMTX 配置：仅 WebRTC，`all_others` 发布者模式 |
 | `bin/README.md` | 依赖二进制下载说明（mediamtx、ffmpeg-whip） |
 | `deploy/inject.py` | 把播放器注入 `/usr/share/kasmvnc/www/{index,vnc}.html` |
@@ -115,7 +117,7 @@ bash deploy/install.sh --no-start # 只装文件不启动
 
 1. 把 `deploy/audio-relay.py`、`deploy/audio-stream.sh` 复制到 `~/.vnc/`（内部硬编码路径自动替换为你的 `$HOME`）。
 2. 把 3 个 systemd 用户服务装到 `~/.config/systemd/user/`，`ExecStart` 里的仓库路径自动替换为当前路径。
-3. `systemctl --user enable --now kasm-audio-webrtc kasm-audio-whep kasm-audio-relay`。
+3. `systemctl --user enable --now kasm-audio-webrtc kasm-audio-whep kasm-audio-relay kasm-audio-whep-watchdog`。看门狗会检测 `stream` 流是否在线（经 MediaMTX 本地 API :9997），丢失约 15s 后自动重启发布端自愈。
 
 检查：
 
@@ -205,6 +207,7 @@ python3 tests/probe4.py
 | 8444 进不去 / 401 | nginx `Authorization` 头与 KasmVNC 凭据不符；KasmVNC `BlacklistThreshold` 拉黑 10s | 改成自己的 `base64(用户:密码)` 或删掉该行；等 10s 再试 |
 | 右下角没有 🔊 | 注入失败 / 浏览器缓存 | 重跑 `sudo python3 deploy/inject.py`，Ctrl+Shift+R |
 | 状态栏一直 WS，WHEP 连不上 | ICE 候选不含服务器地址（跨机时 `mediamtx.yml` 还是 `127.0.0.1`）；防火墙未放行 8189/udp；IPv6 路由异常 | 改 `webrtcAdditionalHosts` 为 LAN IP；放行端口；`player.js` 已强制 IPv4 过滤 |
+| WHEP 突然失效（之前正常） | `mediamtx.yml` 被改动触发 MediaMTX 热重载，WebRTC 模块重启把 WHIP 发布会话终止，而 ffmpeg-whip 不感知、不再重发 | 看门狗 ~20s 自动恢复；想立即恢复：`systemctl --user restart kasm-audio-whep`；避免在运行中乱改 `bin/mediamtx.yml` |
 | WHEP 有连接但无声 | 源静音（`vsink.monitor` RMS=0）；Chrome 远端轨接 WebAudio 的 NetEq 不拉流问题（已用 `<audio>` 元素规避） | 确认有应用在播；重连或切通道 |
 | 有声音但延迟高 | 浏览器 `playoutDelay` 是最大变量；ScriptProcessor 路径有 21ms quantum | 用 WHEP 通道；远程 Chrome 加 `--audio-buffer-size=128` 重启 |
 | 无头 Chrome 不出声 | 无音频设备时 AudioWorklet `process()` 不执行 | 本方案面向真实桌面浏览器；无头环境不可用 |

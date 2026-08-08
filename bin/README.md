@@ -12,6 +12,6 @@
 
 - WHIP 发布命令（Opus 10ms 帧，`kasm-audio-whep.service` 使用）：
   `bin/ffmpeg-whip -fflags nobuffer -f pulse -fragment_size 512 -i vsink.monitor -c:a libopus -b:a 96k -ar 48000 -ac 2 -frame_duration 10 -f whip http://127.0.0.1:8889/stream/whip`
-- MediaMTX 配置见 `bin/mediamtx.yml`（只开 WebRTC，`paths.all_others: source: publisher`）。
+- MediaMTX 配置见 `bin/mediamtx.yml`（只开 WebRTC，`paths.all_others: source: publisher`）。已启用仅回环的本地 API `127.0.0.1:9997`，供 `deploy/whip-watchdog.py` 检查发布状态；**运行中改动该文件会触发热重载并终止当前 WHIP 发布会话**（看门狗会自动恢复）。
 - 用 `bin/ffmpeg-whip -h muxer=whip` 确认 WHIP muxer 可用；Ubuntu 自带 ffmpeg 6.1 没有。
 - `mediamtx.log` 为运行日志，不入库。

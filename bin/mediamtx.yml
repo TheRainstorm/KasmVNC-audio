@@ -11,6 +11,10 @@ webrtcLocalTCPAddress: :8188
 webrtcIPsFromInterfaces: false
 webrtcAdditionalHosts: [127.0.0.1]
 webrtcICEServers2: []
+
+# 本地 API：供 whip-watchdog 检查发布状态（仅监听回环）
+api: yes
+apiAddress: 127.0.0.1:9997
 paths:
   all_others:
     source: publisher

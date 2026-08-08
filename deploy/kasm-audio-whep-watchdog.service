@@ -1,0 +1,11 @@
+[Unit]
+Description=KasmVNC audio WHIP publisher watchdog (auto-restart on missing stream)
+After=kasm-audio-webrtc.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/yfy/.vnc/whip-watchdog.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
