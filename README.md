@@ -60,7 +60,7 @@ sudo python3 deploy/inject.py
 | `deploy/kasmvnc-audio.conf` | nginx 8444：TLS 入口，反代 KasmVNC 8443 + WS 音频 + Icecast + WHIP/WHEP |
 | `deploy/kasm-audio-{relay,webrtc,whep}.service` | systemd 用户服务（relay / MediaMTX / WHIP 发布端） |
 | `deploy/whip-watchdog.py` + `deploy/kasm-audio-whep-watchdog.service` | WHIP 发布看门狗：检测 MediaMTX 上 `stream` 流消失（热重载/发布端挂死）自动重启发布端，~20s 自愈 |
-| `bin/mediamtx.yml` | MediaMTX 配置：仅 WebRTC，`all_others` 发布者模式 |
+| `bin/mediamtx.yml` | MediaMTX 配置模板：仅 WebRTC，`all_others` 发布者模式；运行配置由 install.sh 生成到 `~/.vnc/mediamtx.yml`（ICE 候选自动填服务器 LAN IP） |
 | `bin/README.md` | 依赖二进制下载说明（mediamtx、ffmpeg-whip） |
 | `deploy/inject.py` | 把播放器注入 `/usr/share/kasmvnc/www/{index,vnc}.html` |
 | `deploy/xstartup` | KasmVNC 会话启动示例：pulse 虚拟声卡 + 推流脚本 + xfce4 |
@@ -146,7 +146,7 @@ sudo nginx -t && sudo systemctl reload nginx
 - `location /stream/` → MediaMTX :8889（WHIP/WHEP 信令，`proxy_buffering off`）。
 - `location /` → KasmVNC :8443，带 `Authorization` 头注入（`Basic dXNlcjpwYXNzd29yZA==` 是 `user:password` 的占位符）。KasmVNC 有 Basic Auth 时改成你自己的 `base64(用户:密码)`；想保留登录弹窗就直接删掉这一行。
 - WHEP 媒体是**浏览器直连**服务器 8189/UDP、8188/TCP，不经过 nginx。跨机器访问时必须让 ICE 候选包含服务器地址：
-  - 编辑 `bin/mediamtx.yml` 的 `webrtcAdditionalHosts` 为你的 LAN IP（如 `[192.168.1.10]`），或改 `webrtcIPsFromInterfaces: true` 自动探测；只在本机/回环测试就用 `127.0.0.1`。
+  - 运行配置在 `~/.vnc/mediamtx.yml`（由 `deploy/install.sh` 生成，不入 git）：`webrtcAdditionalHosts` 会自动填服务器 LAN IP（探测不到可用 `KASM_AUDIO_LAN_IP=192.168.1.10 bash deploy/install.sh` 覆盖）。**这是跨机 WHEP 能否连上的关键**——填成 `127.0.0.1` 时只有服务器本机能听。
 - 防火墙放行：
 
 ```bash

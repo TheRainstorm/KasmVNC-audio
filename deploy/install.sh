@@ -48,9 +48,19 @@ command -v systemctl >/dev/null     || err "未找到 systemctl（需要 systemd
 
 # ---- 1. 支持脚本 -> ~/.vnc ----
 mkdir -p "$VNC_DIR" "$SYSTEMD_DIR"
+
+# 探测服务器 LAN IP（跨机 WHEP 的 ICE 候选；可用 KASM_AUDIO_LAN_IP 覆盖）
+LAN_IP="${KASM_AUDIO_LAN_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+if ! echo "$LAN_IP" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+  warn "无法自动探测 LAN IP（当前: ${LAN_IP:-空}），退回 127.0.0.1 —— 仅本机可听；请用 KASM_AUDIO_LAN_IP 指定服务器 IP 后重跑"
+  LAN_IP=127.0.0.1
+fi
+say "MediaMTX ICE 候选 LAN IP: $LAN_IP"
+
 gen deploy/audio-relay.py   "$VNC_DIR/audio-relay.py"   "s|/home/yfy|$HOME|g"
 gen deploy/audio-stream.sh  "$VNC_DIR/audio-stream.sh"  "s|/home/yfy|$HOME|g"
 gen deploy/whip-watchdog.py "$VNC_DIR/whip-watchdog.py" "s|/home/yfy|$HOME|g"
+gen bin/mediamtx.yml "$VNC_DIR/mediamtx.yml" "s|\[127\.0\.0\.1\]|[$LAN_IP]|g"
 [ "$DRY" = 1 ] || chmod +x "$VNC_DIR/audio-relay.py" "$VNC_DIR/audio-stream.sh" "$VNC_DIR/whip-watchdog.py"
 
 # ---- 2. systemd 用户服务（路径替换: /home/yfy/repo/KasmVNC-audio -> $REPO_DIR, /home/yfy -> $HOME）----

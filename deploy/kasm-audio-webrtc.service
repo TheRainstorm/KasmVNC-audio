@@ -3,7 +3,7 @@ Description=MediaMTX WebRTC media server (KasmVNC audio WHIP/WHEP)
 After=network.target
 
 [Service]
-ExecStart=/home/yfy/repo/KasmVNC-audio/bin/mediamtx /home/yfy/repo/KasmVNC-audio/bin/mediamtx.yml
+ExecStart=/home/yfy/repo/KasmVNC-audio/bin/mediamtx /home/yfy/.vnc/mediamtx.yml
 Restart=always
 RestartSec=2
 
