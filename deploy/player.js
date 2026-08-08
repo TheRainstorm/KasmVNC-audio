@@ -1,7 +1,7 @@
 (function () {
   if (window.__kasmAudioStarted) return;
   window.__kasmAudioStarted = true;
-  window.__kasmAudioVer = '417e012';
+  window.__kasmAudioVer = '8c5c4f4-dbg1';
 
   var Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
@@ -20,6 +20,7 @@
   var remoteTrack = null, mediaWired = false, silentTicks = 0, rewireCount = 0;
   var bytes = 0, lastMsgAt = 0, pending = new Float32Array(0);
   var latMs = null, startTs = 0, statsTimer = null, whepTimer = null, whepLoc = null;
+  var lastStats = null, decodeOk = false, decodeOkLogged = false, noDecodeTicks = 0, zeroEnergyTicks = 0;
 
   // ---- UI ----
   var widget, statusEl, btn, dotEl;
@@ -35,6 +36,10 @@
     if (ctx) parts.push('ctx=' + ctx.state);
     if (bytes > 0) parts.push((bytes / 1048576).toFixed(1) + 'MB');
     if (latMs !== null) parts.push('延迟≈' + latMs + 'ms');
+    if (mode === 'whep' && lastStats) {
+      parts.push('pkts=' + lastStats.packetsReceived);
+      parts.push('dec=' + lastStats.framesDecoded);
+    }
     if (lastMsgAt && (Date.now() - lastMsgAt > 3000)) parts.push('⚠️数据停');
     var db = levelDb();
     if (db !== null) parts.push(db + 'dB');
@@ -92,7 +97,7 @@
     btn = document.createElement('button');
     btn.id = 'kasmAudioBtn';
     btn.type = 'button';
-    btn.title = '远程音频 v417e012（WHEP/WebRTC 优先）';
+    btn.title = '远程音频 v8c5c4f4（WHEP/WebRTC 优先）';
     btn.style.cssText = 'width:44px;height:44px;border-radius:22px;border:none;background:rgba(26,155,215,.92);color:#fff;font-size:20px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;transition:all .2s;';
 
     dotEl = document.createElement('div');
@@ -209,6 +214,39 @@
           var base = (typeof ctx.baseLatency === 'number' ? ctx.baseLatency * 1000 : 0);
           var pd = (typeof r.playoutDelay === 'number' ? r.playoutDelay * 1000 : (r.jitter || 0) * 1000 * 1.5);
           if (pkts > 0) latMs = Math.round(pd + out + base);
+          lastStats = {
+            packetsReceived: r.packetsReceived || 0,
+            packetsLost: r.packetsLost || 0,
+            bytesReceived: r.bytesReceived || 0,
+            headerBytesReceived: r.headerBytesReceived || 0,
+            framesDecoded: r.framesDecoded || 0,
+            framesReceived: r.framesReceived || 0,
+            framesDiscarded: r.framesDiscarded || 0,
+            packetsDiscarded: r.packetsDiscarded || 0,
+            totalAudioEnergy: r.totalAudioEnergy || 0,
+            totalSamplesDuration: r.totalSamplesDuration || 0,
+            concealedSamples: r.concealedSamples || 0,
+            silentConcealedSamples: r.silentConcealedSamples || 0,
+            jitter: r.jitter || 0,
+            playoutDelay: r.playoutDelay || 0,
+            jitterBufferDelay: r.jitterBufferDelay || 0,
+            jitterBufferEmittedCount: r.jitterBufferEmittedCount || 0,
+            nackCount: r.nackCount || 0,
+            pliCount: r.pliCount || 0,
+            fractionLost: r.fractionLost || 0,
+            roundTripTime: r.roundTripTime || 0,
+            decoderImplementation: r.decoderImplementation || null,
+            codecId: r.codecId || null,
+            trackMuted: remoteTrack ? remoteTrack.muted : null,
+            trackEnabled: remoteTrack ? remoteTrack.enabled : null
+          };
+          if (pkts > 0 && !decodeOk && (r.framesDecoded || 0) > 0) {
+            decodeOk = true;
+            if (!decodeOkLogged) {
+              decodeOkLogged = true;
+              console.log('[kasm-audio] WHEP 解码成功: frames=' + r.framesDecoded + ' energy=' + r.totalAudioEnergy);
+            }
+          }
         }
       });
       if (cb) cb(pkts);
@@ -219,6 +257,18 @@
     if (statsTimer) clearInterval(statsTimer);
     statsTimer = setInterval(function () {
       whepStats(function (pkts) {
+        if (pkts > 0 && lastStats) {
+          if (lastStats.framesDecoded === 0) {
+            noDecodeTicks++;
+            if (noDecodeTicks === 3) console.warn('[kasm-audio] WHEP 收到 RTP 但 framesDecoded=0（解码失败/不兼容），pkts=' + lastStats.packetsReceived + ' lost=' + lastStats.packetsLost + ' dec=' + lastStats.decoderImplementation);
+          } else {
+            noDecodeTicks = 0;
+            if (lastStats.totalAudioEnergy === 0 && lastStats.totalSamplesDuration > 1) {
+              zeroEnergyTicks++;
+              if (zeroEnergyTicks === 3) console.warn('[kasm-audio] WHEP 解码成功但能量=0（静音帧），concealed=' + lastStats.concealedSamples);
+            } else zeroEnergyTicks = 0;
+          }
+        }
         if (pkts > 0) {
           noMediaTicks = 0;
           if (remoteTrack && mediaWired && levelDb() === -999) {
@@ -419,14 +469,33 @@
       mode: mode,
       running: running,
       pcState: pc ? pc.connectionState : null,
+      iceState: pc ? pc.iceConnectionState : null,
       wsState: ws ? ws.readyState : null,
       bytes: bytes,
       latMs: latMs,
       pendingSamples: pending.length,
-      lastMsgAgo: lastMsgAt ? (Date.now() - lastMsgAt) : null
+      lastMsgAgo: lastMsgAt ? (Date.now() - lastMsgAt) : null,
+      stats: lastStats,
+      levelDb: levelDb()
     };
   };
   window.__kasmAudioLevel = function () { return levelDb(); };
+  window.__kasmAudioSdp = function () {
+    if (!pc) return { err: 'no pc' };
+    var out = { remote: pc.remoteDescription ? pc.remoteDescription.sdp : null, local: pc.localDescription ? pc.localDescription.sdp : null };
+    try {
+      out.transceivers = pc.getTransceivers().map(function (t) {
+        var p = t.receiver ? t.receiver.getParameters() : null;
+        return {
+          mid: t.mid, direction: t.direction, currentDirection: t.currentDirection,
+          codecs: p ? p.codecs.map(function (c) { return c.mimeType + ' pt=' + c.payloadType + ' ' + (c.sdpFmtpLine || ''); }) : [],
+          encodings: p ? p.encodings.map(function (e) { return JSON.stringify(e); }) : [],
+          track: t.receiver && t.receiver.track ? { kind: t.receiver.track.kind, muted: t.receiver.track.muted, enabled: t.receiver.track.enabled } : null
+        };
+      });
+    } catch (e) { out.tErr = String(e); }
+    return out;
+  };
   window.__kasmAudioSpectrum = function () {
     try {
       if (!analyser) return { err: 'no analyser' };

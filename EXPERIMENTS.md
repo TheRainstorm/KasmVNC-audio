@@ -94,3 +94,35 @@ Chrome 输出                 ~10-20ms（outputLatency + baseLatency）
 - 修复：nginx 在 `location /`（反代 8443）注入 `proxy_set_header Authorization "Basic $(base64 user:password)"`，浏览器永远收不到 401，无需任何凭证操作；`websockify` 升级请求同样被注入，实测无凭证 `GET /websockify` → 101。
 - 安全说明：8444 对 LAN 开放等于免密进入桌面；如需收紧，删掉该行并 reload nginx 即可恢复 Basic Auth。
 - 另修：WHEP trickle 404 —— MediaMTX v1.20 的候选提交端点要求 `PATCH` + `Content-Type: application/trickle-ice-sdpfrag`（RFC 8840，body 含 `m=` 行 + `a=mid` + `a=ice-ufrag/pwd` + `a=candidate`），旧的 `POST + application/json` 返回 404；已按新格式重写 `player.js` 的 `onicecandidate`，实测 PATCH → 200。
+
+## E7 WHEP「解码成功但能量=0 / 静音」根因：无头探测 Chrome 反馈回路（2026-08-08）
+
+现象：WHEP 收到 RTP、framesDecoded>0，但 totalAudioEnergy≈0、UI `-999dB`；一会儿后看门狗降级 WS，WS 有「声音」但内容是无意义 DC（用户原话「声音不对，只是噪声」「显示 -1dB」）。时好时坏。
+
+### 决定性对照实验
+
+1. werift 拉 WHEP 抓 Opus RTP → ctypes 调系统 libopus 解码：主链路 RMS -47.7dB（静音）。
+2. 同一时刻 WS PCM 路径（probe4）max=0.8847 且 `uniq(first 1000)=1` —— 全是同一个常数，是 **DC 直流**，不是音频。
+3. 本地 `ffmpeg -f pulse -fragment_size 512 -i vsink.monitor → opus` 解码：-21dB，与 monitor 直测（-1.1dB）对不上 → monitor 本身异常。
+4. paplay 原生播放正弦 → vsink.monitor 仍是常数 DC；新建 vsink2 → 正常正弦。**monitor 卡死输出常数 DC**。
+5. 把 vsink 上的 3 个播放流（2 个 Chrome + ffmpeg 测试音）逐个静音：任一 Chrome 静音后信号立刻变回真实音频 → **DC 来自 Chrome**。
+6. 查进程：两个 headless Chrome（chromeprobe3/4，`kasm_audio_autostart=1` 加载播放页）的音频服务进程把播放器的输出写进了 PulseAudio 默认 sink（= vsink）→ monitor → 又流回 WS/WHEP → **正反馈回路**，收敛成常数 DC（约 ±0.88）。
+
+### 为什么症状如此
+
+- WS 路径：PCM f32 原样转发 DC → 浏览器听到 -1dB 噪声/爆音（用户以为「有声音」）。
+- WHEP 路径：Opus 编码器内置高通滤波器把 DC 滤掉 → 解码后能量≈0 →「WHEP 没有声音」。
+- 时好时坏：回路只在探测 Chrome（或 ares 本机打开播放页的浏览器）在 vsink 上输出时才形成；Chrome 断开/挂起时 monitor 恢复。
+
+### 修复（回路断开 + 持久化）
+
+1. 新建独立 null sink `loop_sink`，把探测 Chrome 的音频输出指过去（`PULSE_SINK=loop_sink`），播放器功能不受影响（analyser/levelDb 照常），但输出不再回到 vsink.monitor。
+2. 持久化：`~/.config/pulse/default.pa` = 系统 default.pa 完整复制 + 追加 `vsink`、`loop_sink` 两个 module-null-sink（PulseAudio 重启后自动恢复；不要只写一行覆盖系统配置）。
+3. 卸载测试用 vsink2；保留 chromeprobe4（9224，带 `--enable-logging`）作为可观测探测实例。
+4. 验证：vsink.monitor 连续多次采样稳定（uniq≈540、RMS=-26dB 为 tone-probe 轻测试音）；响亮测试音（volume=8，RMS -6dB）WS=-6.2dB、WHEP 解码=-6.4dB，两条路完全一致。
+
+### 坑记录
+
+- ffmpeg `sine` 源默认振幅只有满刻度的 1/8（RMS ≈ -22dB），`volume=0.9` 后仍很轻；做能量对比时必须先测输入电平，否则会把「忠实链路」误判成「衰减 20dB」。
+- 判断 monitor 是否损坏：`uniq(first N)` 是否 ≈1（常数）是快速判据；`suspend-sink` 无法修复，需 unload/reload module-null-sink。
+- PulseAudio 用户级 `~/.config/pulse/default.pa` 存在时会**整体替代**系统配置，追加时必须以系统文件为底。
