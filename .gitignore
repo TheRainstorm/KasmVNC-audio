@@ -1,0 +1,7 @@
+# 运行日志 / 临时产物
+*.log
+*.wav
+*.mkv.tmp
+.env
+__pycache__/
+*.pyc
