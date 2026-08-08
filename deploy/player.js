@@ -1,6 +1,7 @@
 (function () {
   if (window.__kasmAudioStarted) return;
   window.__kasmAudioStarted = true;
+  window.__kasmAudioVer = '417e012';
 
   var Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
@@ -16,6 +17,7 @@
   var pc = null, ws = null, sp = null, analyser = null, mediaSrc = null;
   var mode = 'none';          // whep | ws | mp3
   var starting = false, running = false, userStopped = false, fallingBack = false, noMediaTicks = 0;
+  var remoteTrack = null, mediaWired = false, silentTicks = 0, rewireCount = 0;
   var bytes = 0, lastMsgAt = 0, pending = new Float32Array(0);
   var latMs = null, startTs = 0, statsTimer = null, whepTimer = null, whepLoc = null;
 
@@ -90,7 +92,7 @@
     btn = document.createElement('button');
     btn.id = 'kasmAudioBtn';
     btn.type = 'button';
-    btn.title = '远程音频（WHEP/WebRTC 优先）';
+    btn.title = '远程音频 v417e012（WHEP/WebRTC 优先）';
     btn.style.cssText = 'width:44px;height:44px;border-radius:22px;border:none;background:rgba(26,155,215,.92);color:#fff;font-size:20px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;transition:all .2s;';
 
     dotEl = document.createElement('div');
@@ -217,7 +219,26 @@
     if (statsTimer) clearInterval(statsTimer);
     statsTimer = setInterval(function () {
       whepStats(function (pkts) {
-        if (pkts > 0) { noMediaTicks = 0; return; }
+        if (pkts > 0) {
+          noMediaTicks = 0;
+          if (remoteTrack && mediaWired && levelDb() === -999) {
+            silentTicks++;
+            if (silentTicks >= 4) {
+              silentTicks = 0;
+              rewireCount++;
+              if (rewireCount >= 2) {
+                console.warn('[kasm-audio] 重连 2 次仍静音，降级 WS');
+                failWhep(new Error('输出持续静音'));
+              } else {
+                console.warn('[kasm-audio] 收到媒体但输出静音，重连媒体源');
+                rewireMedia();
+              }
+            }
+          } else {
+            silentTicks = 0;
+          }
+          return;
+        }
         noMediaTicks++;
         if (noMediaTicks >= 5) failWhep(new Error('5s 内未收到媒体包'));
       });
@@ -231,6 +252,7 @@
     try { if (analyser) analyser.disconnect(); } catch (e) {}
     try { if (pc) pc.close(); } catch (e) {}
     pc = null; mediaSrc = null; whepLoc = null; statsTimer = null;
+    remoteTrack = null; mediaWired = false; silentTicks = 0; rewireCount = 0;
   }
 
   function failWhep(err) {
@@ -240,6 +262,26 @@
     teardownWhep();
     startWs();
     setStatus('WHEP 无媒体，WS 兜底');
+  }
+
+  function wireMedia(track) {
+    if (!track || mediaWired) return;
+    mediaWired = true;
+    try {
+      var stream = new MediaStream([track]);
+      mediaSrc = ctx.createMediaStreamSource(stream);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      mediaSrc.connect(analyser);
+      analyser.connect(ctx.destination);
+    } catch (e) { console.error('[kasm-audio] wireMedia failed:', e); }
+  }
+
+  function rewireMedia() {
+    try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
+    try { if (analyser) analyser.disconnect(); } catch (e) {}
+    mediaSrc = null; analyser = null; mediaWired = false;
+    wireMedia(remoteTrack);
   }
 
   function startWhep() {
@@ -272,12 +314,8 @@
         }
         pc.ontrack = function (ev) {
           gotTrack = true;
-          var stream = ev.streams && ev.streams[0] ? ev.streams[0] : new MediaStream([ev.track]);
-          mediaSrc = ctx.createMediaStreamSource(stream);
-          analyser = ctx.createAnalyser();
-          analyser.fftSize = 2048;
-          mediaSrc.connect(analyser);
-          analyser.connect(ctx.destination);
+          remoteTrack = ev.track;
+          wireMedia(ev.track);
           done(true);
         };
         pc.onconnectionstatechange = function () {
@@ -348,6 +386,7 @@
     pending = new Float32Array(0);
     running = false; mode = 'none'; latMs = null; bytes = 0;
     fallingBack = false; noMediaTicks = 0;
+    remoteTrack = null; mediaWired = false; silentTicks = 0; rewireCount = 0;
     setStatus('已停止，点击开启');
     collapse();
   }
