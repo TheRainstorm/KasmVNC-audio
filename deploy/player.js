@@ -1,7 +1,7 @@
 (function () {
   if (window.__kasmAudioStarted) return;
   window.__kasmAudioStarted = true;
-  window.__kasmAudioVer = '8c5c4f4-dbg1';
+  window.__kasmAudioVer = 'audioel2';
 
   var Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
@@ -14,7 +14,7 @@
   }
 
   // ---- state ----
-  var pc = null, ws = null, sp = null, analyser = null, mediaSrc = null;
+  var pc = null, ws = null, sp = null, analyser = null, mediaSrc = null, mediaAudioEl = null;
   var mode = 'none';          // whep | ws | mp3
   var starting = false, running = false, userStopped = false, fallingBack = false, noMediaTicks = 0;
   var remoteTrack = null, mediaWired = false, silentTicks = 0, rewireCount = 0;
@@ -125,6 +125,11 @@
 
   function levelDb() {
     try {
+      // WHEP 链路里 Chrome 的 analyser（MediaElement/StreamSource）读不到远端轨数据，
+      // 电平必须用 inbound-rtp 的 audioLevel（0..1 线性）换算。
+      if (mode === 'whep' && lastStats && typeof lastStats.audioLevel === 'number' && lastStats.audioLevel > 0) {
+        return Math.round(20 * Math.log10(lastStats.audioLevel));
+      }
       if (!analyser) return null;
       var buf = new Uint8Array(analyser.frequencyBinCount);
       analyser.getByteTimeDomainData(buf);
@@ -237,6 +242,7 @@
             roundTripTime: r.roundTripTime || 0,
             decoderImplementation: r.decoderImplementation || null,
             codecId: r.codecId || null,
+            audioLevel: r.audioLevel || 0,
             trackMuted: remoteTrack ? remoteTrack.muted : null,
             trackEnabled: remoteTrack ? remoteTrack.enabled : null
           };
@@ -258,20 +264,24 @@
     statsTimer = setInterval(function () {
       whepStats(function (pkts) {
         if (pkts > 0 && lastStats) {
-          if (lastStats.framesDecoded === 0) {
+          // Chrome 的 framesDecoded 对音频常为 0（即使正常播放），
+          // 用 jitterBufferEmittedCount（NetEq 实际输出的样本数）判断是否在解码。
+          if ((lastStats.jitterBufferEmittedCount || 0) === 0) {
             noDecodeTicks++;
-            if (noDecodeTicks === 3) console.warn('[kasm-audio] WHEP 收到 RTP 但 framesDecoded=0（解码失败/不兼容），pkts=' + lastStats.packetsReceived + ' lost=' + lastStats.packetsLost + ' dec=' + lastStats.decoderImplementation);
+            if (noDecodeTicks === 3) console.warn('[kasm-audio] WHEP 收到 RTP 但 NetEq 无输出，pkts=' + lastStats.packetsReceived + ' lost=' + lastStats.packetsLost);
           } else {
             noDecodeTicks = 0;
             if (lastStats.totalAudioEnergy === 0 && lastStats.totalSamplesDuration > 1) {
               zeroEnergyTicks++;
-              if (zeroEnergyTicks === 3) console.warn('[kasm-audio] WHEP 解码成功但能量=0（静音帧），concealed=' + lastStats.concealedSamples);
+              if (zeroEnergyTicks === 3) console.warn('[kasm-audio] WHEP NetEq 输出但能量=0（静音帧），concealed=' + lastStats.concealedSamples);
             } else zeroEnergyTicks = 0;
           }
         }
         if (pkts > 0) {
           noMediaTicks = 0;
-          if (remoteTrack && mediaWired && levelDb() === -999) {
+          var whepSilent = (lastStats && (lastStats.jitterBufferEmittedCount || 0) === 0) ||
+                           (lastStats && lastStats.audioLevel === 0 && lastStats.totalSamplesDuration > 1);
+          if (remoteTrack && mediaWired && (mode === 'whep' ? whepSilent : levelDb() === -999)) {
             silentTicks++;
             if (silentTicks >= 4) {
               silentTicks = 0;
@@ -300,6 +310,7 @@
     if (whepTimer) clearTimeout(whepTimer);
     try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
     try { if (analyser) analyser.disconnect(); } catch (e) {}
+    dropMediaElement();
     try { if (pc) pc.close(); } catch (e) {}
     pc = null; mediaSrc = null; whepLoc = null; statsTimer = null;
     remoteTrack = null; mediaWired = false; silentTicks = 0; rewireCount = 0;
@@ -318,19 +329,38 @@
     if (!track || mediaWired) return;
     mediaWired = true;
     try {
+      // 关键：远程 WebRTC 音频轨直接接 WebAudio（createMediaStreamSource）时，
+      // Chrome 的 NetEq 不拉流（缓冲 2s 填满即丢，framesDecoded=0 静音），
+      // 必须用 <audio> 元素播放（实测可正常解码），
+      // 再用 createMediaElementSource 把元素输出接进 analyser 做电平检测。
       var stream = new MediaStream([track]);
-      mediaSrc = ctx.createMediaStreamSource(stream);
+      var el = document.createElement('audio');
+      el.autoplay = true;
+      el.playsInline = true;
+      el.srcObject = stream;
+      el.volume = 1.0;
+      (document.body || document.documentElement).appendChild(el);
+      el.play().catch(function () {});
+      mediaAudioEl = el;
       analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
+      mediaSrc = ctx.createMediaElementSource(el);
       mediaSrc.connect(analyser);
       analyser.connect(ctx.destination);
     } catch (e) { console.error('[kasm-audio] wireMedia failed:', e); }
+  }
+
+  function dropMediaElement() {
+    try { if (mediaAudioEl) { mediaAudioEl.pause(); mediaAudioEl.srcObject = null; } } catch (e) {}
+    try { if (mediaAudioEl && mediaAudioEl.parentNode) mediaAudioEl.parentNode.removeChild(mediaAudioEl); } catch (e) {}
+    mediaAudioEl = null;
   }
 
   function rewireMedia() {
     try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
     try { if (analyser) analyser.disconnect(); } catch (e) {}
     mediaSrc = null; analyser = null; mediaWired = false;
+    dropMediaElement();
     wireMedia(remoteTrack);
   }
 
@@ -377,6 +407,22 @@
           }
         };
         pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false }).then(function (o) {
+          // 在 offer 里协商 stereo：RFC 7587 规定 answer 里的 stereo=1 只有在 offer 已协商时才生效。
+          // Chrome 只按协商声道初始化 NetEq（SetSampleRateAndChannels 48000 1），
+          // 而 ffmpeg 发布的是双声道 Opus 帧 → framesDecoded=0 静音。补 answer 无效，必须补 offer。
+          var opusPt = null;
+          o.sdp.split(/\r?\n/).forEach(function (line) {
+            var mm = /^a=rtpmap:(\d+) opus\/48000/.exec(line);
+            if (mm) opusPt = mm[1];
+          });
+          if (opusPt) {
+            var re = new RegExp('^a=fmtp:' + opusPt + ' ([^\\r\\n]*)$', 'm');
+            o.sdp = o.sdp.replace(re, function (all, params) {
+              params = params.replace(/useinbandfec=1/g, '').replace(/;;+/g, ';').replace(/;$/,'');
+              if (!/stereo=1/.test(params)) params += ';stereo=1;sprop-stereo=1';
+              return 'a=fmtp:' + opusPt + ' ' + params;
+            });
+          }
           return pc.setLocalDescription(o);
         }).then(function () {
           var posted = false;
@@ -431,6 +477,7 @@
     if (whepTimer) clearTimeout(whepTimer);
     try { if (sp) sp.disconnect(); } catch (e) {}
     try { if (mediaSrc) mediaSrc.disconnect(); } catch (e) {}
+    dropMediaElement();
     if (ctx && ctx.state === 'running') ctx.suspend().catch(function () {});
     pc = null; ws = null; sp = null; mediaSrc = null; analyser = null;
     pending = new Float32Array(0);

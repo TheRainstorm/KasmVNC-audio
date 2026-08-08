@@ -1,0 +1,120 @@
+<!doctype html><html><head><meta charset="utf-8"><title>WHEP test</title></head><body>
+<pre id="out">connecting...</pre>
+<script>
+var out = document.getElementById('out');
+function log(s){ out.textContent += '\n' + s; }
+log('start ' + location.href);
+var pc = null, audio = null, remote = null;
+var STEREO = /stereo=1/.test(location.search);
+var IPv6 = /ipv6=1/.test(location.search);
+
+function fmtpOpus(sdp){
+  var pt = null;
+  sdp.split(/\r?\n/).forEach(function(l){ var m=/^a=rtpmap:(\d+) opus\/48000/.exec(l); if(m) pt=m[1]; });
+  if (pt){
+    var re = new RegExp('^a=fmtp:' + pt + ' ([^\\r\\n]*)$', 'm');
+    sdp = sdp.replace(re, function(all, p){
+      if (/nofec=1/.test(location.search)) p = p.replace(/useinbandfec=1/g,'').replace(/;;+/g,';').replace(/;$/,'');
+      if (/stereo=1/.test(location.search) && !/stereo=1/.test(p)) p += ';stereo=1;sprop-stereo=1';
+      return 'a=fmtp:' + pt + ' ' + p;
+    });
+  }
+  return sdp;
+}
+
+function connect(){
+  pc = new RTCPeerConnection({iceServers: []});
+  pc.addTransceiver('audio', {direction: 'recvonly'});
+  pc.ontrack = function(ev){
+    remote = ev.track;
+    log('ontrack ' + ev.track.kind + ' enabled=' + ev.track.enabled + ' muted=' + ev.track.muted);
+    if (/elwa=1/.test(location.search)){
+      var Ctx2 = window.AudioContext || window.webkitAudioContext;
+      var ctx2 = new Ctx2({sampleRate: 48000, latencyHint: 'interactive'});
+      var el2 = document.createElement('audio');
+      el2.autoplay = true; el2.playsInline = true;
+      el2.srcObject = new MediaStream([ev.track]);
+      document.body.appendChild(el2);
+      el2.play().then(function(){ log('el.play ok currentTime=' + el2.currentTime); }, function(e){ log('el.play err ' + e); });
+      window.__el2 = el2;
+      var src2 = ctx2.createMediaElementSource(el2);
+      var an2 = ctx2.createAnalyser(); an2.fftSize = 2048;
+      src2.connect(an2); an2.connect(ctx2.destination);
+      window.__rms = function(){
+        var b = new Uint8Array(an2.frequencyBinCount);
+        an2.getByteTimeDomainData(b);
+        var s = 0; for (var i=0;i<b.length;i++){ var v=(b[i]-128)/128; s+=v*v; }
+        var r = Math.sqrt(s/b.length);
+        return r > 0.0001 ? Math.round(20*Math.log10(r)) : -999;
+      };
+      ctx2.resume().then(function(){ log('ctx2 running state=' + ctx2.state); });
+    } else if (/waudio=1/.test(location.search)){
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      var ctx = new Ctx({sampleRate: 48000, latencyHint: 'interactive'});
+      var src = ctx.createMediaStreamSource(new MediaStream([ev.track]));
+      var an = ctx.createAnalyser(); an.fftSize = 2048;
+      src.connect(an); an.connect(ctx.destination);
+      ctx.resume().then(function(){ log('webaudio running ctx=' + ctx.state); });
+    } else {
+      audio = document.createElement('audio');
+      audio.srcObject = new MediaStream([ev.track]);
+      audio.autoplay = true;
+      document.body.appendChild(audio);
+      audio.play().then(function(){ log('audio.play() ok'); }, function(e){ log('audio.play() err ' + e); });
+    }
+  };
+  pc.onconnectionstatechange = function(){ log('connState=' + pc.connectionState + ' ice=' + pc.iceConnectionState); };
+  pc.oniceconnectionstatechange = function(){ log('iceState=' + pc.iceConnectionState); };
+  pc.onicecandidate = function(ev){
+    if (!ev.candidate || !whepLoc) return;
+    var u='', p='';
+    var m=/a=ice-ufrag:(\S+)/.exec(pc.localDescription.sdp); if(m) u=m[1];
+    m=/a=ice-pwd:(\S+)/.exec(pc.localDescription.sdp); if(m) p=m[1];
+    var frag = 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:' + (ev.candidate.sdpMid||'0') + '\r\na=ice-ufrag:'+u+'\r\na=ice-pwd:'+p+'\r\na=' + ev.candidate.candidate + '\r\n';
+    fetch(whepLoc, {method:'PATCH', headers:{'Content-Type':'application/trickle-ice-sdpfrag'}, body: frag}).catch(function(e){ log('trickle err '+e); });
+  };
+  var whepLoc = null;
+  pc.createOffer().then(function(o){
+    if (STEREO) o.sdp = fmtpOpus(o.sdp);
+    return pc.setLocalDescription(o);
+  }).then(function(){
+    fetch('/stream/whep', {method:'POST', headers:{'Content-Type':'application/sdp'}, body: pc.localDescription.sdp})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); whepLoc = r.headers.get('Location'); return r.text(); })
+      .then(function(ans){
+        if (!IPv6){
+          ans = ans.split(/\r?\n/).filter(function(l){
+            if (!/^a=candidate:/.test(l)) return true;
+            var parts = l.split(/\s+/);
+            return !(parts[4] && parts[4].indexOf(':') !== -1);
+          }).join('\r\n');
+        }
+        log('--- answer ---\n' + ans + '\n--- end ---');
+        return pc.setRemoteDescription({type:'answer', sdp: ans});
+      }).catch(function(e){ log('WHEP err ' + e); });
+  }).catch(function(e){ log('offer err ' + e); });
+}
+
+setInterval(function(){
+  if (!pc) return;
+  pc.getStats().then(function(stats){
+    var s = {audio:{}, transport:{}};
+    stats.forEach(function(r){
+      if (r.type === 'inbound-rtp' && r.kind === 'audio') s.audio = r;
+      if (r.type === 'transport') s.transport = r;
+      if (r.type === 'candidate-pair' && r.state === 'succeeded') s.pair = r;
+    });
+    log('T+'+Math.round(performance.now()/100)/10+'s dec='+s.audio.framesDecoded+
+        ' rx='+s.audio.packetsReceived+' disc='+s.audio.packetsDiscarded+
+        ' emitted='+s.audio.jitterBufferEmittedCount+
+        ' samples='+s.audio.totalSamplesReceived+
+        ' energy='+(s.audio.totalAudioEnergy||0).toFixed(3)+
+        ' dur='+(s.audio.totalSamplesDuration||0).toFixed(1)+
+        ' proto='+s.transport.protocol+' '+s.transport.selectedCandidatePairId+
+        ' cand='+(s.pair ? s.pair.localCandidateType+'-'+s.pair.remoteCandidateType+' '+s.pair.localCandidateProtocol : '?')+
+        ' rtcp='+s.audio.rtcpStats?.roundTripTime+
+        ' vol='+(remote ? remote.muted : '?'));
+  });
+}, 2000);
+
+connect();
+</script></body></html>

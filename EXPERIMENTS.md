@@ -126,3 +126,36 @@ Chrome 输出                 ~10-20ms（outputLatency + baseLatency）
 - ffmpeg `sine` 源默认振幅只有满刻度的 1/8（RMS ≈ -22dB），`volume=0.9` 后仍很轻；做能量对比时必须先测输入电平，否则会把「忠实链路」误判成「衰减 20dB」。
 - 判断 monitor 是否损坏：`uniq(first N)` 是否 ≈1（常数）是快速判据；`suspend-sink` 无法修复，需 unload/reload module-null-sink。
 - PulseAudio 用户级 `~/.config/pulse/default.pa` 存在时会**整体替代**系统配置，追加时必须以系统文件为底。
+
+## E8 「只能 WS 出声」真正根因：Chrome 远端音频轨接 WebAudio 时 NetEq 不拉流（2026-08-08）
+
+现象：WHEP `pc=connected`、收到 RTP（rx 增长）但 `framesDecoded=0`、`jitterBufferEmittedCount=0`、每 2s `packetsDiscarded` 增加 200，看门狗降级 WS；WS 一直正常。用户问「为什么只能 ws 连接音频」。
+
+### 排查过程（含纠错）
+
+1. **pcap 方向坑**：`tcpdump udp port 8189` 抓到的是 **ffmpeg-whip 上行**（39575→8189，即推流侧），不是 WHEP 下行（8189→客户端临时端口）。早期把上行的 marker=1 / ts+480 / 「SR NTP 乱跳」当成下行分析，方向全错（ffmpeg 的 SR 本来就乱，MediaMTX 只用它做绝对时间映射）。
+2. **headless 探针坑**：headless Chrome 的 NetEq 缓冲 200 包满即 flush，容易被误读为「流不被接受」；需用 headful + PulseAudio（Xvfb :7）验证。
+3. **SDP munge 排除**：player.js 的 stereo offer 补丁（去掉 useinbandfec + 加 stereo）被怀疑，实测 `?stereo=1`、`?stereo=1&nofec=1` 均正常 → 与 fmtp 无关。
+4. **决定性对照**（同一台 headful Chrome、同一流）：
+   - `<audio>` 元素播放：`emitted` 每秒增长 ~48k、`disc=0`、PulseAudio 录音见 880Hz → 正常。
+   - `ctx.createMediaStreamSource(track)` 接 WebAudio：`disc` 每 2s +200、`emitted=0` → 复现故障。
+   - `audio 元素 + createMediaElementSource`：NetEq 正常输出（录音仍见 880Hz）→ 可作为修复方案。
+5. 结论：**远端 WebRTC 音频轨接 WebAudio（MediaStreamAudioSourceNode）时，本环境 Chrome 的 NetEq 不被拉取**；`<audio>` 元素路径正常。player.js 原先用 WebAudio 接线，所以 WHEP 永远静音 → 看门狗降级 WS。
+
+### 修复（deploy/player.js → audioel2）
+
+1. `wireMedia()` 改为：`<audio>` 元素播放（`srcObject=MediaStream`，autoplay + play()），用 `createMediaElementSource(el)` 接 analyser 做电平检测；新增 `dropMediaElement()`，teardown/stop/rewire 时清理。
+2. 电平与静音检测不再依赖 analyser（该场景下 analyser 读不到远端轨数据，`levelDb()` 会误报 -999 触发看门狗降级）：
+   - `levelDb()`：`mode==='whep'` 时用 inbound-rtp `audioLevel`（0..1 线性）换算 dB；
+   - 看门狗 `whepSilent`：用 `jitterBufferEmittedCount===0`（NetEq 无输出）判断，而非 `framesDecoded===0`（Chrome 音频常为 0 即使正常播放）。
+
+### 验证（headful Chrome + PulseAudio，Xvfb :7）
+
+- KasmVNC 页 `?kasm_audio_autostart=1`：`mode=whep`、`pc=connected`、`packetsDiscarded=0`、`jitterBufferEmittedCount` 持续增长、`audioLevel≈0.071 → -23dB`、延迟 53ms，重载两次均稳定，无任何降级告警。
+- `parecord probe_sink2.monitor`：880Hz 测试音 -26dB 确实从扬声器路径输出。
+- 结论：WHEP 已能像 WS 一样出声，且不再误降级。
+
+### 遗留
+
+- Chrome 148 该行为（远端轨 → WebAudio 不拉流）是否所有版本/平台一致未知；已用 stats 判断规避，不再依赖 analyser 数据。
+- `framesDecoded` 对音频不可靠（正常播放时仍为 0），UI/诊断显示建议改用 `jitterBufferEmittedCount`。
